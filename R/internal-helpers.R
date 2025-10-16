@@ -11,7 +11,7 @@
 #'
 #' Columns:
 #' - name: canonical model id
-#' - provider: "openai" or "gemini"
+#' - provider: "openai", "gemini", or "claude"
 #' - type: "chat" or "reasoning"
 #' - supports_temp: whether temperature should be sent
 #'
@@ -25,26 +25,33 @@ MODEL_SPEC <- data.frame(
     "o3-mini","o1-mini","o1",
     # OpenAI reasoning (GPT-5 family)
     "gpt-5","gpt-5-mini","gpt-5-nano",
-    # Gemini chat
-    "gemini-1.5-flash","gemini-1.5-pro","gemini-1.0-pro"
+    # Gemini chat (updated models)
+    "gemini-2.5-pro","gemini-2.5-flash","gemini-2.5-flash-lite",
+    "gemini-2.0-flash","gemini-2.0-flash-lite",
+    # Claude chat
+    "claude-sonnet-4-5-20250929","claude-haiku-4-5-20251001","claude-opus-4-1-20250805",
+    "claude-sonnet-4-20250514","claude-3-7-sonnet-20250219","claude-3-5-haiku-20241022"
   ),
   provider      = c(
     rep("openai", 4),
     rep("openai", 3),
     rep("openai", 3),
-    rep("gemini", 3)
+    rep("gemini", 5),
+    rep("claude", 6)
   ),
   type          = c(
     rep("chat", 4),
     rep("reasoning", 3),
     rep("reasoning", 3),
-    rep("chat", 3)
+    rep("chat", 5),
+    rep("chat", 6)
   ),
   supports_temp = c(
     rep(TRUE, 4),   # chat models use temperature
     rep(FALSE, 3),  # o-series reasoning: ignore temperature
     rep(FALSE, 3),  # GPT-5 reasoning: ignore temperature
-    rep(TRUE, 3)    # gemini chat
+    rep(TRUE, 5),   # gemini chat
+    rep(TRUE, 6)    # claude chat
   ),
   stringsAsFactors = FALSE
 )
@@ -287,8 +294,8 @@ call_gemini_chat <- function(model, prompt, temperature, api_key, logger){
 
   dat <- tryCatch(endpoint_try(model), error = function(e){
     if (grepl("404", e$message) && model == "gemini-1.0-pro"){
-      logger("404 for gemini-1.0-pro; falling back to gemini-1.5-pro")
-      endpoint_try("gemini-1.5-pro")
+      logger("404 for gemini-1.0-pro; falling back to gemini-2.5-flash")
+      endpoint_try("gemini-2.5-flash")
     } else stop(e)
   })
 
@@ -300,12 +307,47 @@ call_gemini_chat <- function(model, prompt, temperature, api_key, logger){
   out
 }
 
+#' Call Anthropic Claude chat endpoint
+#'
+#' @keywords internal
+#' @noRd
+call_claude_chat <- function(model, prompt, temperature, api_key, logger){
+  body <- list(
+    model = model,
+    messages = list(list(role = "user", content = prompt)),
+    max_tokens = 2048
+  )
+  if (!is.null(temperature)) body$temperature <- temperature
+
+  logger("Claude chat model:", model)
+  logger("Prompt(first 120):", substr(prompt, 1, 120))
+  logger("Body:", jsonlite::toJSON(body, auto_unbox = TRUE))
+
+  req <- httr2::request("https://api.anthropic.com/v1/messages") |>
+    httr2::req_headers(
+      `x-api-key` = api_key,
+      `anthropic-version` = "2023-06-01",
+      `content-type` = "application/json"
+    ) |>
+    httr2::req_body_json(body)
+
+  dat <- httr2::resp_body_json(perform_req(req, logger))
+  if (!is.null(dat$error)) stop(dat$error$message, call. = FALSE)
+
+  out <- tryCatch({
+    paste0(vapply(dat$content, function(x) if (!is.null(x$text)) x$text else "", ""), collapse = "\n")
+  }, error = function(e) "")
+
+  logger("Claude out(first 120):", substr(out, 1, 120))
+  out
+}
+
 #' Generic LLM call dispatcher
 #'
 #' @keywords internal
 #' @noRd
 llm_call <- function(model, prompt, temperature = 0,
-                     openai_key = NULL, gemini_key = NULL,
+                     openai_key = NULL, gemini_key = NULL, claude_key = NULL,
                      logger = function(...) {}, effort = "medium"){
   spec <- get_spec(model)
   if (spec$provider == "openai"){
@@ -326,11 +368,20 @@ llm_call <- function(model, prompt, temperature = 0,
       return(call_openai_chat(model, prompt, temp, key, logger))
     }
 
-  } else {
+  } else if (spec$provider == "gemini"){
     key <- coalesce_chr(gemini_key, Sys.getenv("GEMINI_API_KEY"))
     if (!nzchar(key)) stop("Missing Gemini API key", call. = FALSE)
     temp <- if (spec$supports_temp) temperature else NULL
     return(call_gemini_chat(model, prompt, temp, key, logger))
+
+  } else if (spec$provider == "claude"){
+    key <- coalesce_chr(claude_key, Sys.getenv("CLAUDE_API_KEY"))
+    if (!nzchar(key)) stop("Missing Claude API key", call. = FALSE)
+    temp <- if (spec$supports_temp) temperature else NULL
+    return(call_claude_chat(model, prompt, temp, key, logger))
+
+  } else {
+    stop("Unsupported provider: ", spec$provider, call. = FALSE)
   }
 }
 
