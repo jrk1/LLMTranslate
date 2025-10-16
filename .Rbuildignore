@@ -1,5 +1,5 @@
 ^.*\.Rproj$
 ^\.Rproj\.user$
 ^CRAN-SUBMISSION$
-^LICENSE\\.md$
-^cran-comments\\.md$
+^cran-comments\.md$
+^LICENSE\.md$
