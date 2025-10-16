@@ -332,7 +332,7 @@ ui <- fluidPage(
       h3("How to cite"),
       p("If you use this package/app, please cite:"),
       tags$pre(style = "white-space:pre-wrap;",
-               "Kunst, J. R. (2025). LLMTranslate: LLM Survey Translator (Version 0.2.0) [R package].
+               "Kunst, J. R. (2025). LLMTranslate: LLM Survey Translator (Version 0.3.0) [R package].
 Retrieved from https://CRAN.R-project.org/package=LLMTranslate"),
       p("BibTeX:"),
       tags$pre(style = "white-space:pre-wrap;",
@@ -340,7 +340,7 @@ Retrieved from https://CRAN.R-project.org/package=LLMTranslate"),
   title  = {LLMTranslate: LLM Survey Translator},
   author = {Jonas R. Kunst},
   year   = {2025},
-  note   = {R package version 0.2.0},
+  note   = {R package version 0.3.0},
   url    = {https://CRAN.R-project.org/package=LLMTranslate}
 }"),
       p("Also cite the specific LLMs you used and the translation frameworks (TRAPD, ISPOR).")
