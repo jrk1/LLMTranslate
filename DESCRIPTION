@@ -1,6 +1,6 @@
 Package: LLMTranslate
 Title: 'shiny' App for TRAPD/ISPOR Survey Translation with LLMs
-Version: 0.4.0
+Version: 0.2.0
 Authors@R:
     person(given = "Jonas R.", family = "Kunst",
            email = "jonas.r.kunst@bi.no",
