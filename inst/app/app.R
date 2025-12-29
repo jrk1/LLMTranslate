@@ -35,6 +35,8 @@ call_openai_reasoning_responses    <- grab("call_openai_reasoning_responses")
 call_gemini_chat                   <- grab("call_gemini_chat")
 call_claude_chat                   <- grab("call_claude_chat")
 llm_call                           <- grab("llm_call")
+parse_batch_response               <- grab("parse_batch_response")
+parse_batch_recon_response         <- grab("parse_batch_recon_response")
 
 # helper: detect models that should be treated as "reasoning" (ignore temperature, allow effort)
 is_reasoning_model <- function(m) {
@@ -84,6 +86,67 @@ DEFAULT_RECON_UI <- paste(
   "Return a JSON object with exactly these keys:",
   "{{\"revised\": \"<revised {to_lang} item only>\", \"explanation\": \"<one short sentence on any change>\"}}.",
   "No other text.",
+  sep = "\n"
+)
+
+# Batch translation prompts (context-aware)
+DEFAULT_BATCH_FORWARD <- paste(
+  "You are a professional survey translator working within TRAPD/ISPOR best practices.",
+  "Goal: Translate ALL items from {from_lang} to {to_lang}.",
+  "Context: You are translating an entire survey instrument. Use the context of all items to inform your translations.",
+  "Constraints:",
+  "- Preserve meaning, intent, item polarity (negations), numbers, quantifiers, modality, and time references.",
+  "- Maintain consistency in terminology across all items.",
+  "- Avoid culture-bound idioms/metaphors unless an equivalent exists.",
+  "- Keep reading level and tone comparable to the source.",
+  "Output format:",
+  "- Return a JSON array with one object per item.",
+  "- Each object must have: {{\"item_number\": N, \"translation\": \"translated text\"}}",
+  "- Preserve the order of items.",
+  "- Output ONLY the JSON array, no explanations.",
+  "",
+  "ITEMS ({from_lang}):",
+  "{items_text}",
+  sep = "\n"
+)
+
+DEFAULT_BATCH_BACK <- paste(
+  "You are performing blind back-translation as part of a TRAPD/ISPOR quality check.",
+  "Goal: Translate ALL items from {to_lang} back to {from_lang} as literally as possible.",
+  "Rules:",
+  "- Do NOT try to improve wording or guess the original; reflect exactly what the {to_lang} items say.",
+  "- Preserve polarity, quantifiers, modality, and tense.",
+  "- Maintain consistency across items.",
+  "Output format:",
+  "- Return a JSON array with one object per item.",
+  "- Each object must have: {{\"item_number\": N, \"back_translation\": \"back-translated text\"}}",
+  "- Preserve the order of items.",
+  "- Output ONLY the JSON array, no explanations.",
+  "",
+  "ITEMS ({to_lang}):",
+  "{items_text}",
+  sep = "\n"
+)
+
+DEFAULT_BATCH_RECON <- paste(
+  "You are reconciling survey translations (TRAPD/ISPOR step) for multiple items.",
+  "For each item, you will receive:",
+  "1) ORIGINAL (in {from_lang})",
+  "2) FORWARD (in {to_lang})",
+  "3) BACK (in {from_lang})",
+  "Tasks:",
+  "- Compare ORIGINAL vs BACK to detect meaning shifts, omissions, or added nuances.",
+  "- Accept FORWARD if conceptually equivalent and natural in {to_lang}.",
+  "- If revision is needed, adjust FORWARD to match ORIGINAL meaning precisely.",
+  "- Maintain consistency in terminology across all items.",
+  "Output format:",
+  "- Return a JSON array with one object per item.",
+  "- Each object must have: {{\"item_number\": N, \"revised\": \"revised {to_lang} translation\", \"explanation\": \"brief explanation of changes\"}}",
+  "- Preserve the order of items.",
+  "- Output ONLY the JSON array, no explanations outside the JSON.",
+  "",
+  "ITEMS:",
+  "{items_text}",
   sep = "\n"
 )
 
@@ -160,26 +223,29 @@ ui <- fluidPage(
              ),
              hr(),
              h4("Model Selection"),
+             tags$p(style = "font-size: 13px; color: #666;", "Select from the list or type a custom model name"),
              fluidRow(
                column(6,
-                      selectInput(
+                      selectizeInput(
                         "forward_model", "Forward translation model",
                         choices  = MODEL_SPEC$name,
                         selected = if ("gpt-5-mini" %in% MODEL_SPEC$name) "gpt-5-mini" else
                           if ("gpt-4o-mini" %in% MODEL_SPEC$name) "gpt-4o-mini" else
-                            MODEL_SPEC$name[[1]]
+                            MODEL_SPEC$name[[1]],
+                        options = list(create = TRUE, placeholder = "Select or type model name")
                       ),
                       sliderInput("forward_temp", "Forward model temperature",
                                   min = 0, max = 1, value = 0, step = 0.01),
                       uiOutput("forward_temp_hint")
                ),
                column(6,
-                      selectInput(
+                      selectizeInput(
                         "back_model", "Backward translation model",
                         choices  = MODEL_SPEC$name,
                         selected = if ("gpt-5-mini" %in% MODEL_SPEC$name) "gpt-5-mini" else
                           if ("gpt-4.1-mini" %in% MODEL_SPEC$name) "gpt-4.1-mini" else
-                            MODEL_SPEC$name[[1]]
+                            MODEL_SPEC$name[[1]],
+                        options = list(create = TRUE, placeholder = "Select or type model name")
                       ),
                       sliderInput("back_temp", "Backward model temperature",
                                   min = 0, max = 2, value = 0, step = 0.01),
@@ -189,12 +255,13 @@ ui <- fluidPage(
              hr(),
              fluidRow(
                column(6,
-                      selectInput(
+                      selectizeInput(
                         "recon_model", "Reconciliation model (3rd call)",
                         choices  = MODEL_SPEC$name,
                         selected = if ("gpt-5" %in% MODEL_SPEC$name) "gpt-5" else
                           if ("gpt-4.1-mini" %in% MODEL_SPEC$name) "gpt-4.1-mini" else
-                            MODEL_SPEC$name[[1]]
+                            MODEL_SPEC$name[[1]],
+                        options = list(create = TRUE, placeholder = "Select or type model name")
                       ),
                       sliderInput("recon_temp", "Reconciliation model temperature",
                                   min = 0, max = 1, value = 0, step = 0.01),
@@ -210,7 +277,48 @@ ui <- fluidPage(
                )
              )
     ),
-    tabPanel("Translation",
+    tabPanel("Batch Translation",
+             sidebarLayout(
+               sidebarPanel(
+                 textInput("batch_lang_from","Translate FROM (language)", value = "English"),
+                 textInput("batch_lang_to",  "Translate TO (language)",   value = "German"),
+                 uiOutput("batch_file_input_ui"),
+                 uiOutput("batch_col_selector"),
+                 textAreaInput("batch_forward_prompt", "Forward translation prompt (batch)",
+                               width = "100%", height = "220px", value = DEFAULT_BATCH_FORWARD),
+                 checkboxInput("batch_do_back","Do backward translation", TRUE),
+                 conditionalPanel(
+                   condition = "input.batch_do_back == true",
+                   textAreaInput("batch_back_prompt","Backward translation prompt (batch)",
+                                 width = "100%", height = "200px", value = DEFAULT_BATCH_BACK),
+                   checkboxInput("batch_do_recon","Do reconciliation / discrepancy check", TRUE),
+                   conditionalPanel(
+                     condition = "input.batch_do_recon == true",
+                     textAreaInput("batch_recon_prompt","Reconciliation prompt (batch)",
+                                   width = "100%", height = "280px", value = DEFAULT_BATCH_RECON)
+                   )
+                 ),
+                 checkboxInput("batch_debug","Verbose debug (prints requests/responses)", FALSE)
+               ),
+               mainPanel(
+                 div(class="top-buttons",
+                     actionButton("batch_run",  "Start Batch Translation", class = "btn-primary"),
+                     actionButton("batch_stop", "Stop",             class = "btn-danger"),
+                     actionButton("batch_reset", "Reset",           class = "btn-warning"),
+                     uiOutput("batch_download_ui", inline = TRUE)
+                 ),
+                 uiOutput("batch_progress_ui"),
+                 uiOutput("batch_preview_ui"),
+                 h4("Preview / Results"),
+                 uiOutput("batch_sheet_display_selector"),
+                 DTOutput("batch_table"),
+                 hr(),
+                 h4("Debug log"),
+                 verbatimTextOutput("batch_debug_log", placeholder = TRUE)
+               )
+             )
+    ),
+    tabPanel("Item-by-item Translation",
              sidebarLayout(
                sidebarPanel(
                  textInput("lang_from","Translate FROM (language)", value = "English"),
@@ -308,22 +416,55 @@ ui <- fluidPage(
     tabPanel("Help",
              br(),
              h3("How to use LLM Survey Translator"),
+             h4("Excel File Preparation"),
+             tags$p("Before uploading your Excel file, ensure it is properly formatted:"),
+             tags$ul(
+               tags$li(strong("One item per row"), ": Each survey item should be in its own row"),
+               tags$li(strong("Column with original text"), ": Have a dedicated column containing the items to translate (e.g., 'English', 'Original', 'Item_Text')"),
+               tags$li(strong("No merged cells"), ": Avoid merged cells in your Excel file"),
+               tags$li(strong("Empty rows"), ": Empty rows are automatically skipped during translation"),
+               tags$li(strong("Multiple sheets"), ": If your file has multiple sheets, you can select individual sheets or translate all at once"),
+               tags$li(strong("File format"), ": Use .xlsx or .xls format")
+             ),
+             h4("Translation Steps"),
              tags$ol(
                tags$li(strong("API Keys & Models"), ": Enter keys (see \"API Keys Guide\" tab). Pick models for forward, back, reconcile. Use \"Test Connection\" to verify keys work."),
-               tags$li(strong("Translation"), ": Upload Excel, choose ORIGINAL column, adjust prompts if needed."),
-               tags$li("Click 'Start Translation'. Progress bar shows current progress. Status toasts show: \u2192 forward, \u2190 back, \u21bb reconciling."),
+               tags$li(strong("Choose Translation Mode"), ":"),
+               tags$ul(
+                 tags$li(strong("Item-by-item Translation"), ": Translates each item individually in separate LLM calls. Best for very long instruments or when API rate limits are a concern."),
+                 tags$li(strong("Batch Translation"), ": Translates all items in a single LLM call per stage (forward/back/recon). Faster and more context-aware, but may have token limits for very long instruments.")
+               ),
+               tags$li(strong("Translation Setup"), ": Upload Excel, choose ORIGINAL column, adjust prompts if needed."),
+               tags$li("Click 'Start Translation' or 'Start Batch Translation'. Progress bar shows current progress. Status toasts show: \u2192 forward, \u2190 back, \u21bb reconciling."),
                tags$li("First translation appears as a preview to verify quality."),
-               tags$li("Click 'Stop' to halt before the next call/item. You can resume later."),
+               tags$li("Click 'Stop' to halt processing. For item-by-item, you can resume later. For batch, you'll need to restart."),
                tags$li("Download the Excel with new columns when finished. File includes Model Selection Log and Prompt Log sheets.")
              ),
+             h4("Item-by-item vs. Batch Translation"),
+             tags$div(
+               h5("Item-by-item Translation"),
+               tags$ul(
+                 tags$li(strong("When to use"), ": Long instruments (100+ items), strict rate limits, need to resume partial translations"),
+                 tags$li(strong("Pros"), ": Works with any instrument length, can pause/resume, fine-grained error handling"),
+                 tags$li(strong("Cons"), ": Slower, less context between items, higher total API costs for many items")
+               ),
+               h5("Batch Translation"),
+               tags$ul(
+                 tags$li(strong("When to use"), ": Short to medium instruments (typically <100 items), need consistency across items"),
+                 tags$li(strong("Pros"), ": Much faster, LLM sees all items for context-aware translation, maintains terminology consistency, lower API costs"),
+                 tags$li(strong("Cons"), ": May hit token limits with very long instruments, cannot easily pause/resume, all-or-nothing processing")
+               ),
+               tags$p(strong("Recommendation"), ": Start with Batch Translation for most surveys. Switch to Item-by-item if you encounter token limit errors or need to process very long instruments (150+ items).")
+             ),
              h4("Prompts"),
-             p("Defaults follow TRAPD/ISPOR recommendations. Adapt to your domain."),
+             p("Defaults follow TRAPD/ISPOR recommendations. Batch prompts emphasize context and consistency across items. Adapt to your domain."),
              h4("Troubleshooting"),
              tags$ul(
                tags$li("HTTP 400/404: model or endpoint mismatch. Try another model or test API key connection."),
+               tags$li("Token limit errors in Batch mode: Switch to Item-by-item translation or use a model with higher token limits."),
                tags$li("If something hangs, press Stop. Check the Debug log."),
                tags$li("Ensure Excel column names are correct and items are not empty."),
-               tags$li("For large batches (500+ items), expect longer processing times.")
+               tags$li("For large batches (500+ items) in item-by-item mode, expect longer processing times.")
              )
     ),
     tabPanel(
@@ -357,6 +498,15 @@ Retrieved from https://CRAN.R-project.org/package=LLMTranslate"),
 # ---- Server ----
 server <- function(input, output, session){
   rv <- reactiveValues(
+    df = NULL, result = NULL, log = character(),
+    running = FALSE, stop = FALSE,
+    state = NULL, notif_id = NULL,
+    preview = NULL, progress_pct = 0, progress_text = "",
+    file_reset = 0
+  )
+
+  # Batch translation reactive values
+  batch_rv <- reactiveValues(
     df = NULL, result = NULL, log = character(),
     running = FALSE, stop = FALSE,
     state = NULL, notif_id = NULL,
@@ -477,15 +627,58 @@ server <- function(input, output, session){
   output$col_selector <- renderUI({
     file_input <- input[[paste0("file_", rv$file_reset)]]
     req(file_input)
-    df_head <- read_excel(file_input$datapath, n_max = 1)
-    selectInput("orig_col", "Column with ORIGINAL item", choices = names(df_head))
+
+    # Get available sheets
+    sheets <- excel_sheets(file_input$datapath)
+
+    # Create choices with "All sheets" option if multiple sheets
+    sheet_choices <- if (length(sheets) > 1) {
+      c("All sheets", sheets)
+    } else {
+      sheets
+    }
+
+    # If sheet is selected, use it; otherwise use first sheet or "All sheets"
+    selected_sheet <- if (!is.null(input$sheet_select)) {
+      input$sheet_select
+    } else if (length(sheets) > 1) {
+      "All sheets"
+    } else {
+      sheets[1]
+    }
+
+    # For column preview, use first sheet
+    preview_sheet <- if (selected_sheet == "All sheets") sheets[1] else selected_sheet
+    df_head <- read_excel(file_input$datapath, sheet = preview_sheet, n_max = 1)
+
+    tagList(
+      if (length(sheets) > 1) {
+        selectInput("sheet_select", "Select sheet(s)",
+                    choices = sheet_choices,
+                    selected = selected_sheet)
+      },
+      selectInput("orig_col", "Column with ORIGINAL item", choices = names(df_head))
+    )
   })
 
   observe({
     file_input <- input[[paste0("file_", rv$file_reset)]]
     if (!is.null(file_input)) {
-      rv$df     <- read_excel(file_input$datapath)
+      sheets <- excel_sheets(file_input$datapath)
+      selected_sheet <- if (!is.null(input$sheet_select)) {
+        input$sheet_select
+      } else if (length(sheets) > 1) {
+        "All sheets"
+      } else {
+        sheets[1]
+      }
+
+      # For preview, just load the first sheet or selected sheet
+      preview_sheet <- if (selected_sheet == "All sheets") sheets[1] else selected_sheet
+      rv$df     <- read_excel(file_input$datapath, sheet = preview_sheet)
       rv$result <- NULL
+      rv$selected_sheet <- selected_sheet
+      rv$file_path <- file_input$datapath
     }
   })
 
@@ -536,6 +729,7 @@ server <- function(input, output, session){
 
       # Create model selection log
       model_log <- data.frame(
+        `Translation Mode` = "Item-by-item Translation",
         Step = c("Forward Translation", "Backward Translation", "Reconciliation"),
         Model = c(
           if (!is.null(cfg)) cfg$f_model else input$forward_model,
@@ -547,7 +741,8 @@ server <- function(input, output, session){
           if (!is.null(cfg)) ifelse(is.null(cfg$b_temp), "N/A (reasoning model)", cfg$b_temp) else input$back_temp,
           if (!is.null(cfg)) ifelse(is.null(cfg$r_temp), "N/A (reasoning model)", cfg$r_temp) else input$recon_temp
         ),
-        stringsAsFactors = FALSE
+        stringsAsFactors = FALSE,
+        check.names = FALSE
       )
 
       # Create prompt log
@@ -611,11 +806,13 @@ server <- function(input, output, session){
     f_model <- normalize_model(input$forward_model)
     b_model <- normalize_model(input$back_model)
     r_model <- normalize_model(input$recon_model)
+
+    # Warn about custom models (but don't block)
     for (m in c(f_model, b_model, r_model)){
       if (!m %in% MODEL_SPEC$name){
-        showNotification(paste("Unsupported model:", m), type = "error", session = session)
-        logger("Unsupported model:", m)
-        return(NULL)
+        showNotification(paste("Using custom model:", m, "- ensure it's supported by the API"),
+                         type = "warning", duration = 8, session = session)
+        logger("Warning: Using custom model:", m)
       }
     }
 
@@ -789,6 +986,509 @@ server <- function(input, output, session){
     }
 
     later(process_step, 0.001)
+  })
+
+  # ---- Batch Translation Handlers ----
+
+  # Batch progress bar
+  output$batch_progress_ui <- renderUI({
+    req(batch_rv$running, batch_rv$progress_text)
+    div(class="progress-container",
+        div(class="progress",
+            div(class="progress-bar progress-bar-striped progress-bar-animated",
+                role="progressbar",
+                style=paste0("width: ", batch_rv$progress_pct, "%"),
+                batch_rv$progress_text)
+        )
+    )
+  })
+
+  # Batch preview
+  output$batch_preview_ui <- renderUI({
+    req(batch_rv$preview)
+    div(class="preview-box",
+        h5(HTML("&#10003; Batch Translation Preview (first item shown - verify quality)")),
+        div(class="preview-item",
+            span(class="preview-label", "Original: "), batch_rv$preview$original),
+        div(class="preview-item",
+            span(class="preview-label", "Forward: "), batch_rv$preview$forward),
+        if (!is.null(batch_rv$preview$back))
+          div(class="preview-item",
+              span(class="preview-label", "Back: "), batch_rv$preview$back),
+        if (!is.null(batch_rv$preview$reconciled))
+          div(class="preview-item",
+              span(class="preview-label", "Reconciled: "), batch_rv$preview$reconciled)
+    )
+  })
+
+  batch_update_status <- function(msg, type = "message"){
+    old_id <- isolate(batch_rv$notif_id)
+    if (!is.null(old_id)){
+      try(removeNotification(old_id, session = session), silent = TRUE)
+    }
+    id <- showNotification(msg, type = type,
+                           duration = NULL, closeButton = FALSE,
+                           session = session)
+    isolate(batch_rv$notif_id <- id)
+  }
+
+  # Dynamic file input for batch
+  output$batch_file_input_ui <- renderUI({
+    fileInput(paste0("batch_file_", batch_rv$file_reset), "Upload Excel", accept = c(".xlsx",".xls"))
+  })
+
+  output$batch_col_selector <- renderUI({
+    file_input <- input[[paste0("batch_file_", batch_rv$file_reset)]]
+    req(file_input)
+
+    # Get available sheets
+    sheets <- excel_sheets(file_input$datapath)
+
+    # Create choices with "All sheets" option if multiple sheets
+    sheet_choices <- if (length(sheets) > 1) {
+      c("All sheets", sheets)
+    } else {
+      sheets
+    }
+
+    # If sheet is selected, use it; otherwise use first sheet or "All sheets"
+    selected_sheet <- if (!is.null(input$batch_sheet_select)) {
+      input$batch_sheet_select
+    } else if (length(sheets) > 1) {
+      "All sheets"
+    } else {
+      sheets[1]
+    }
+
+    # For column preview, use first sheet
+    preview_sheet <- if (selected_sheet == "All sheets") sheets[1] else selected_sheet
+    df_head <- read_excel(file_input$datapath, sheet = preview_sheet, n_max = 1)
+
+    tagList(
+      if (length(sheets) > 1) {
+        selectInput("batch_sheet_select", "Select sheet(s)",
+                    choices = sheet_choices,
+                    selected = selected_sheet)
+      },
+      selectInput("batch_orig_col", "Column with ORIGINAL items", choices = names(df_head))
+    )
+  })
+
+  observe({
+    file_input <- input[[paste0("batch_file_", batch_rv$file_reset)]]
+    if (!is.null(file_input)) {
+      sheets <- excel_sheets(file_input$datapath)
+      selected_sheet <- if (!is.null(input$batch_sheet_select)) {
+        input$batch_sheet_select
+      } else if (length(sheets) > 1) {
+        "All sheets"
+      } else {
+        sheets[1]
+      }
+
+      # For preview, just load the first sheet or selected sheet
+      preview_sheet <- if (selected_sheet == "All sheets") sheets[1] else selected_sheet
+      batch_rv$df     <- read_excel(file_input$datapath, sheet = preview_sheet)
+      batch_rv$result <- NULL
+      batch_rv$selected_sheet <- selected_sheet
+      batch_rv$file_path <- file_input$datapath
+    }
+  })
+
+  observeEvent(input$batch_do_back, {
+    if (!isTRUE(input$batch_do_back)){
+      updateCheckboxInput(session, "batch_do_recon", value = FALSE)
+    }
+  })
+
+  observeEvent(input$batch_stop, {
+    batch_rv$stop <- TRUE
+    batch_update_status("STOP requested…", "warning")
+  })
+
+  observeEvent(input$batch_reset, {
+    batch_rv$df <- NULL
+    batch_rv$result <- NULL
+    batch_rv$log <- character()
+    batch_rv$running <- FALSE
+    batch_rv$stop <- FALSE
+    batch_rv$state <- NULL
+    batch_rv$notif_id <- NULL
+    batch_rv$preview <- NULL
+    batch_rv$progress_pct <- 0
+    batch_rv$progress_text <- ""
+    batch_rv$file_reset <- batch_rv$file_reset + 1
+
+    updateTextInput(session, "batch_lang_from", value = "English")
+    updateTextInput(session, "batch_lang_to", value = "German")
+    updateTextAreaInput(session, "batch_forward_prompt", value = DEFAULT_BATCH_FORWARD)
+    updateTextAreaInput(session, "batch_back_prompt", value = DEFAULT_BATCH_BACK)
+    updateTextAreaInput(session, "batch_recon_prompt", value = DEFAULT_BATCH_RECON)
+
+    showNotification("Batch reset complete. Upload a new file to start.", type = "message")
+  })
+
+  output$batch_download_ui <- renderUI({
+    req(batch_rv$result)
+    div(id="download_btn", downloadButton("batch_download","Download Excel"))
+  })
+
+  output$batch_download <- downloadHandler(
+    filename = function() paste0("batch_translated_", Sys.Date(), ".xlsx"),
+    content  = function(file){
+      req(batch_rv$result)
+      cfg <- batch_rv$state
+
+      # Create model selection log
+      model_log <- data.frame(
+        `Translation Mode` = "Batch Translation",
+        Step = c("Forward Translation", "Backward Translation", "Reconciliation"),
+        Model = c(
+          if (!is.null(cfg)) cfg$f_model else input$forward_model,
+          if (!is.null(cfg)) cfg$b_model else input$back_model,
+          if (!is.null(cfg)) cfg$r_model else input$recon_model
+        ),
+        Temperature = c(
+          if (!is.null(cfg)) ifelse(is.null(cfg$f_temp), "N/A (reasoning model)", cfg$f_temp) else input$forward_temp,
+          if (!is.null(cfg)) ifelse(is.null(cfg$b_temp), "N/A (reasoning model)", cfg$b_temp) else input$back_temp,
+          if (!is.null(cfg)) ifelse(is.null(cfg$r_temp), "N/A (reasoning model)", cfg$r_temp) else input$recon_temp
+        ),
+        stringsAsFactors = FALSE,
+        check.names = FALSE
+      )
+
+      # Create prompt log
+      prompt_log <- data.frame(
+        Step = c("Forward Translation", "Backward Translation", "Reconciliation"),
+        Prompt = c(
+          if (!is.null(cfg)) cfg$forward_prompt else input$batch_forward_prompt,
+          if (!is.null(cfg)) cfg$back_prompt else input$batch_back_prompt,
+          if (!is.null(cfg)) cfg$recon_prompt else input$batch_recon_prompt
+        ),
+        stringsAsFactors = FALSE
+      )
+
+      # Create workbook
+      wb <- openxlsx::createWorkbook()
+
+      # Add translated sheet(s)
+      if (is.list(batch_rv$result) && !is.data.frame(batch_rv$result)) {
+        # Multiple sheets - batch_rv$result is a named list of data frames
+        for (sheet_name in names(batch_rv$result)) {
+          openxlsx::addWorksheet(wb, sheet_name)
+          openxlsx::writeData(wb, sheet_name, batch_rv$result[[sheet_name]])
+        }
+      } else {
+        # Single sheet
+        sheet_name <- if (!is.null(cfg$sheet_name)) cfg$sheet_name else "Batch Translation Results"
+        openxlsx::addWorksheet(wb, sheet_name)
+        openxlsx::writeData(wb, sheet_name, batch_rv$result)
+      }
+
+      # Add log sheets
+      openxlsx::addWorksheet(wb, "Model Selection Log")
+      openxlsx::writeData(wb, "Model Selection Log", model_log)
+      openxlsx::addWorksheet(wb, "Prompt Log")
+      openxlsx::writeData(wb, "Prompt Log", prompt_log)
+
+      openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
+    }
+  )
+
+  output$batch_debug_log <- renderText(paste(batch_rv$log, collapse = "\n"))
+
+  # Sheet selector for display (only shown for multi-sheet results)
+  output$batch_sheet_display_selector <- renderUI({
+    req(batch_rv$result)
+    if (is.list(batch_rv$result) && !is.data.frame(batch_rv$result)) {
+      # Multi-sheet result
+      sheet_names <- names(batch_rv$result)
+      selectInput("batch_display_sheet", "Select sheet to display:",
+                  choices = sheet_names,
+                  selected = sheet_names[1],
+                  width = "300px")
+    }
+  })
+
+  output$batch_table <- renderDT({
+    if (is.null(batch_rv$result)) {
+      dat <- batch_rv$df
+    } else {
+      # Check if result is a list of data frames (multi-sheet) or single data frame
+      if (is.list(batch_rv$result) && !is.data.frame(batch_rv$result)) {
+        # Multi-sheet: get selected sheet or first sheet
+        selected_display_sheet <- input$batch_display_sheet
+        if (is.null(selected_display_sheet) || !selected_display_sheet %in% names(batch_rv$result)) {
+          selected_display_sheet <- names(batch_rv$result)[1]
+        }
+        dat <- batch_rv$result[[selected_display_sheet]]
+      } else {
+        # Single sheet
+        dat <- batch_rv$result
+      }
+    }
+    req(dat)
+    datatable(dat, options = list(pageLength = 20, scrollX = TRUE))
+  })
+
+  observeEvent(input$batch_run, {
+    req(batch_rv$df, input$batch_orig_col)
+
+    if (batch_rv$running) {
+      showNotification("Batch translation already running!", type = "warning")
+      return()
+    }
+
+    batch_rv$stop <- FALSE
+    batch_rv$running <- TRUE
+    batch_rv$log <- character()
+    batch_rv$preview <- NULL
+
+    logger <- make_logger(batch_rv, isTRUE(input$batch_debug))
+    logger("---- BATCH TRANSLATION START ----")
+
+    f_model <- normalize_model(input$forward_model)
+    b_model <- normalize_model(input$back_model)
+    r_model <- normalize_model(input$recon_model)
+
+    # Warn about custom models (but don't block)
+    for (m in c(f_model, b_model, r_model)){
+      if (!m %in% MODEL_SPEC$name){
+        showNotification(paste("Using custom model:", m, "- ensure it's supported by the API"),
+                         type = "warning", duration = 8, session = session)
+        logger("Warning: Using custom model:", m)
+      }
+    }
+
+    f_temp_eff <- if (is_reasoning_model(f_model)) NULL else input$forward_temp
+    b_temp_eff <- if (is_reasoning_model(b_model)) NULL else input$back_temp
+    r_temp_eff <- if (is_reasoning_model(r_model)) NULL else input$recon_temp
+
+    # Determine which sheets to process
+    selected_sheet <- batch_rv$selected_sheet
+    all_sheets <- excel_sheets(batch_rv$file_path)
+
+    sheets_to_process <- if (selected_sheet == "All sheets") {
+      all_sheets
+    } else {
+      selected_sheet
+    }
+
+    logger(paste("Processing", length(sheets_to_process), "sheet(s):", paste(sheets_to_process, collapse = ", ")))
+
+    # Store results for each sheet
+    all_results <- list()
+
+    # Wrap entire processing in tryCatch
+    tryCatch({
+      for (sheet_idx in seq_along(sheets_to_process)) {
+        current_sheet <- sheets_to_process[sheet_idx]
+        logger(paste("=== Processing sheet:", current_sheet, "(", sheet_idx, "of", length(sheets_to_process), ") ==="))
+
+        # Read the sheet
+        df <- read_excel(batch_rv$file_path, sheet = current_sheet)
+
+        orig_col <- input$batch_orig_col
+        items <- df[[orig_col]]
+        n_items <- length(items)
+
+        # Initialize result columns
+        fwd_col   <- paste0("Forward_", input$batch_lang_to)
+        back_col  <- if (isTRUE(input$batch_do_back)) paste0("Back_", input$batch_lang_from) else NULL
+        recon_col <- if (isTRUE(input$batch_do_back) && isTRUE(input$batch_do_recon)) paste0("Reconciled_", input$batch_lang_to) else NULL
+        change_col<- if (isTRUE(input$batch_do_back) && isTRUE(input$batch_do_recon)) "Recon_Explanation" else NULL
+
+        df[[fwd_col]] <- NA_character_
+        if (!is.null(back_col)) df[[back_col]] <- NA_character_
+        if (!is.null(recon_col)) {
+          df[[recon_col]] <- NA_character_
+          df[[change_col]] <- NA_character_
+        }
+
+        # Filter out empty rows - keep track of original indices
+        non_empty_idx <- which(!is.na(items) & nzchar(trimws(as.character(items))))
+        if (length(non_empty_idx) == 0) {
+          logger(paste("Skipping sheet", current_sheet, "- no non-empty items"))
+          next
+        }
+
+        non_empty_items <- items[non_empty_idx]
+        logger(paste("Total rows:", n_items, "| Non-empty items to translate:", length(non_empty_items)))
+
+        batch_rv$progress_pct <- 10
+        batch_rv$progress_text <- "Preparing batch translation..."
+
+        # FORWARD TRANSLATION
+        sheet_status <- if (length(sheets_to_process) > 1) paste0(" [Sheet: ", current_sheet, "]") else ""
+        batch_update_status(paste0("\u2192 Forward translating batch...", sheet_status), "message")
+        logger("Stage: Forward translation")
+
+        # Create items text for prompt - using sequential numbering for non-empty items
+        items_text <- paste(sapply(seq_along(non_empty_items), function(i) {
+          paste0(i, ". ", non_empty_items[i])
+        }), collapse = "\n")
+
+        f_prompt <- glue_data(
+          list(items_text = items_text, from_lang = input$batch_lang_from, to_lang = input$batch_lang_to),
+          input$batch_forward_prompt
+        )
+
+        batch_rv$progress_pct <- 20
+        batch_rv$progress_text <- "Calling LLM for forward translation..."
+
+        fwd_response <- llm_call(f_model, f_prompt, f_temp_eff,
+                                 input$openai_key, input$gemini_key, input$claude_key, logger, input$reasoning_effort)
+
+        logger("Forward response received, parsing...")
+
+        # Parse JSON response
+        fwd_parsed <- parse_batch_response(fwd_response, "translation", length(non_empty_items), logger)
+
+        # Map parsed translations back to original row indices
+        for (i in seq_along(non_empty_idx)) {
+          df[[fwd_col]][non_empty_idx[i]] <- fwd_parsed[[i]]
+        }
+
+        batch_rv$progress_pct <- 40
+        logger("Forward translation complete")
+
+        # BACKWARD TRANSLATION (if requested)
+        if (isTRUE(input$batch_do_back)) {
+          batch_update_status(paste0("\u2190 Back translating batch...", sheet_status), "message")
+          logger("Stage: Backward translation")
+
+          # Only translate non-empty items
+          items_text_back <- paste(sapply(seq_along(non_empty_idx), function(i) {
+            paste0(i, ". ", df[[fwd_col]][non_empty_idx[i]])
+          }), collapse = "\n")
+
+          b_prompt <- glue_data(
+            list(items_text = items_text_back, from_lang = input$batch_lang_from, to_lang = input$batch_lang_to),
+            input$batch_back_prompt
+          )
+
+          batch_rv$progress_pct <- 50
+          batch_rv$progress_text <- "Calling LLM for backward translation..."
+
+          back_response <- llm_call(b_model, b_prompt, b_temp_eff,
+                                    input$openai_key, input$gemini_key, input$claude_key, logger, input$reasoning_effort)
+
+          logger("Backward response received, parsing...")
+
+          back_parsed <- parse_batch_response(back_response, "back_translation", length(non_empty_items), logger)
+
+          # Map parsed back-translations to original row indices
+          for (i in seq_along(non_empty_idx)) {
+            df[[back_col]][non_empty_idx[i]] <- back_parsed[[i]]
+          }
+
+          batch_rv$progress_pct <- 60
+          logger("Backward translation complete")
+
+          # RECONCILIATION (if requested)
+          if (isTRUE(input$batch_do_recon)) {
+            batch_update_status(paste0("\u21bb Reconciling batch...", sheet_status), "message")
+            logger("Stage: Reconciliation")
+
+            # Only reconcile non-empty items
+            items_text_recon <- paste(sapply(seq_along(non_empty_idx), function(i) {
+              idx <- non_empty_idx[i]
+              paste0(
+                "Item ", i, ":\n",
+                "ORIGINAL: ", items[idx], "\n",
+                "FORWARD: ", df[[fwd_col]][idx], "\n",
+                "BACK: ", df[[back_col]][idx], "\n"
+              )
+            }), collapse = "\n")
+
+            r_prompt <- glue_data(
+              list(items_text = items_text_recon, from_lang = input$batch_lang_from, to_lang = input$batch_lang_to),
+              input$batch_recon_prompt
+            )
+
+            batch_rv$progress_pct <- 70
+            batch_rv$progress_text <- "Calling LLM for reconciliation..."
+
+            recon_response <- llm_call(r_model, r_prompt, r_temp_eff,
+                                       input$openai_key, input$gemini_key, input$claude_key, logger, input$reasoning_effort)
+
+            logger("Reconciliation response received, parsing...")
+
+            recon_parsed <- parse_batch_recon_response(recon_response, length(non_empty_items), logger)
+
+            # Map parsed reconciliations to original row indices
+            for (i in seq_along(non_empty_idx)) {
+              df[[recon_col]][non_empty_idx[i]] <- recon_parsed[[i]]$revised
+              df[[change_col]][non_empty_idx[i]] <- recon_parsed[[i]]$explanation
+            }
+
+            batch_rv$progress_pct <- 90
+            logger("Reconciliation complete")
+          }
+        }
+
+        # Store result for this sheet
+        all_results[[current_sheet]] <- df
+        logger(paste("Sheet", current_sheet, "completed"))
+
+        # Update progress for multi-sheet processing
+        if (length(sheets_to_process) > 1) {
+          overall_pct <- round((sheet_idx / length(sheets_to_process)) * 100)
+          batch_rv$progress_pct <- overall_pct
+          batch_rv$progress_text <- paste0("Completed ", sheet_idx, " of ", length(sheets_to_process), " sheets")
+        }
+
+        # Create preview from first sheet's first non-empty item
+        if (sheet_idx == 1 && is.null(batch_rv$preview)) {
+          first_idx <- non_empty_idx[1]
+          batch_rv$preview <- list(
+            original = items[first_idx],
+            forward = df[[fwd_col]][first_idx],
+            back = if (!is.null(back_col)) df[[back_col]][first_idx] else NULL,
+            reconciled = if (!is.null(recon_col)) df[[recon_col]][first_idx] else NULL
+          )
+        }
+
+      } # End of sheet loop
+
+    # Final progress update
+    batch_rv$progress_pct <- 100
+    batch_rv$progress_text <- "Complete!"
+
+    # Store results - either single df or list of dfs
+    if (length(sheets_to_process) == 1) {
+      batch_rv$result <- all_results[[1]]
+      sheet_name <- sheets_to_process[1]
+    } else {
+      batch_rv$result <- all_results
+      sheet_name <- NULL
+    }
+
+    batch_rv$state <- list(
+      from_lang = input$batch_lang_from,
+      to_lang = input$batch_lang_to,
+      forward_prompt = input$batch_forward_prompt,
+      back_prompt = input$batch_back_prompt,
+      recon_prompt = input$batch_recon_prompt,
+      f_model = f_model,
+      b_model = b_model,
+      r_model = r_model,
+      f_temp = f_temp_eff,
+      b_temp = b_temp_eff,
+      r_temp = r_temp_eff,
+      sheet_name = sheet_name
+    )
+
+    batch_update_status("Batch translation complete!", "message")
+    logger("---- BATCH TRANSLATION END ----")
+
+    }, error = function(e) {
+      logger("ERROR:", e$message)
+      showNotification(paste("Error during batch translation:", e$message), type = "error", duration = NULL)
+      batch_update_status(paste("Error:", e$message), "error")
+    }, finally = {
+      batch_rv$running <- FALSE
+    })
   })
 }
 
