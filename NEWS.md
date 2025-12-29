@@ -1,3 +1,38 @@
+# LLMTranslate 0.3.0
+
+## Major Features
+
+* **Batch Translation Mode**: New translation mode that sends all items in a single LLM call per stage (forward/back/recon) for faster processing and better context-aware translations
+* **Multi-Sheet Excel Support**: Can now select and translate individual sheets or all sheets at once from Excel files with multiple sheets
+* **Custom Model Input**: Model selection fields now accept custom model names typed by users, allowing use of newly released models without app updates
+* **Empty Row Handling**: Automatically filters and skips empty rows during translation while maintaining correct row alignment
+* **Sheet-Specific Status**: Status notifications now indicate which sheet is being processed during multi-sheet translations
+
+## UI/UX Improvements
+
+* Batch Translation tab now appears before Item-by-item Translation as the recommended default
+* Added sheet selector dropdown for viewing results from different sheets after multi-sheet translation
+* Added "Translation Mode" column to Model Selection Log indicating whether Batch or Item-by-item mode was used
+* Added comprehensive Excel file preparation guide in Help tab
+* Model selection dropdowns now support typing custom model names with autocomplete
+* Custom models trigger informative warnings instead of blocking translation
+* Progress text shows current sheet name during multi-sheet processing
+* Multi-sheet downloads include all translated sheets plus Model Selection and Prompt logs
+
+## Translation Quality Improvements
+
+* Batch mode prompts emphasize context and terminology consistency across items
+* Fixed item number parsing in batch responses to prevent row misalignment
+* Parser now uses `item_number` field from LLM responses for accurate mapping
+* Improved error handling and logging for batch translation operations
+
+## Bug Fixes
+
+* Fixed preview table error when displaying multi-sheet translation results
+* Fixed row mapping issue where translations were offset by one row
+* Fixed tryCatch structure in batch translation for proper error handling
+* Corrected indentation and control flow in multi-sheet processing loop
+
 # LLMTranslate 0.2.0
 
 ## Major Features

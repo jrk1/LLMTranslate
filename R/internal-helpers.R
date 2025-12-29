@@ -202,6 +202,142 @@ parse_recon_output <- function(txt){
   )
 }
 
+#' Parse batch translation response (forward or backward)
+#'
+#' Expects a JSON array with objects containing either "translation" or "back_translation"
+#'
+#' @keywords internal
+#' @noRd
+parse_batch_response <- function(txt, field_name, n_items, logger = function(...) {}){
+  txt2 <- strip_code_fences(txt)
+
+  # Try to parse as JSON
+  parsed <- try(jsonlite::fromJSON(txt2, simplifyVector = FALSE), silent = TRUE)
+
+  if (inherits(parsed, "try-error") || !is.list(parsed)) {
+    logger("Failed to parse batch response as JSON. Attempting line-by-line parsing...")
+    # Fallback: try to parse line by line
+    lines <- strsplit(txt2, "\n", fixed = TRUE)[[1]]
+    lines <- lines[nzchar(trimws(lines))]
+    result <- vector("list", n_items)
+    for (i in seq_len(min(n_items, length(lines)))) {
+      # Remove leading numbers and dots
+      cleaned <- sub("^\\s*\\d+\\.?\\s*", "", lines[i])
+      result[[i]] <- cleaned
+    }
+    # Fill remaining with error message
+    if (length(result) < n_items) {
+      for (i in (length(result) + 1):n_items) {
+        result[[i]] <- "ERROR: Could not parse response"
+      }
+    }
+    return(result)
+  }
+
+  # Extract translations from parsed JSON
+  # Use item_number field to map correctly, fallback to array order
+  result <- vector("list", n_items)
+
+  for (j in seq_along(parsed)) {
+    # Check if item has item_number field
+    item_num <- parsed[[j]][["item_number"]]
+
+    if (!is.null(item_num)) {
+      # Use the item_number specified by LLM
+      idx <- as.integer(item_num)
+      if (idx >= 1 && idx <= n_items) {
+        result[[idx]] <- as.character(parsed[[j]][[field_name]] %null% "ERROR: Missing field")
+      } else {
+        logger(paste("Warning: Item number", idx, "out of range (1 to", n_items, ")"))
+      }
+    } else {
+      # Fallback: use array position if no item_number field
+      if (j <= n_items) {
+        result[[j]] <- as.character(parsed[[j]][[field_name]] %null% "ERROR: Missing field")
+      }
+    }
+  }
+
+  # Fill any remaining nulls with error message
+  for (i in seq_len(n_items)) {
+    if (is.null(result[[i]])) {
+      result[[i]] <- "ERROR: Missing translation in response"
+      logger(paste("Warning: Missing", field_name, "for item", i))
+    }
+  }
+
+  result
+}
+
+#' Parse batch reconciliation response
+#'
+#' Expects a JSON array with objects containing "revised" and "explanation"
+#'
+#' @keywords internal
+#' @noRd
+parse_batch_recon_response <- function(txt, n_items, logger = function(...) {}){
+  txt2 <- strip_code_fences(txt)
+
+  # Try to parse as JSON
+  parsed <- try(jsonlite::fromJSON(txt2, simplifyVector = FALSE), silent = TRUE)
+
+  if (inherits(parsed, "try-error") || !is.list(parsed)) {
+    logger("Failed to parse batch reconciliation response as JSON. Using fallback...")
+    # Fallback: return error for all items
+    result <- vector("list", n_items)
+    for (i in seq_len(n_items)) {
+      result[[i]] <- list(revised = "ERROR: Could not parse response", explanation = "")
+    }
+    return(result)
+  }
+
+  # Extract reconciliation data from parsed JSON
+  # Use item_number field to map correctly, fallback to array order
+  result <- vector("list", n_items)
+
+  for (j in seq_along(parsed)) {
+    # Check if item has item_number field
+    item_num <- parsed[[j]][["item_number"]]
+
+    revised <- if (!is.null(parsed[[j]][["revised"]])) {
+      as.character(parsed[[j]][["revised"]])
+    } else {
+      "ERROR: Missing revised field"
+    }
+
+    explanation <- if (!is.null(parsed[[j]][["explanation"]])) {
+      as.character(parsed[[j]][["explanation"]])
+    } else {
+      ""
+    }
+
+    if (!is.null(item_num)) {
+      # Use the item_number specified by LLM
+      idx <- as.integer(item_num)
+      if (idx >= 1 && idx <= n_items) {
+        result[[idx]] <- list(revised = revised, explanation = explanation)
+      } else {
+        logger(paste("Warning: Item number", idx, "out of range (1 to", n_items, ")"))
+      }
+    } else {
+      # Fallback: use array position if no item_number field
+      if (j <= n_items) {
+        result[[j]] <- list(revised = revised, explanation = explanation)
+      }
+    }
+  }
+
+  # Fill any remaining nulls with error message
+  for (i in seq_len(n_items)) {
+    if (is.null(result[[i]])) {
+      result[[i]] <- list(revised = "ERROR: Missing item in response", explanation = "")
+      logger(paste("Warning: Missing reconciliation data for item", i))
+    }
+  }
+
+  result
+}
+
 # -------------------------------------------------------------------
 # API wrappers
 # -------------------------------------------------------------------
