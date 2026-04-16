@@ -4,68 +4,30 @@
 \name{LLMTranslate}
 \alias{LLMTranslate}
 \alias{LLMTranslate-package}
-\title{LLMTranslate: Shiny App for TRAPD/ISPOR-style Survey Translation with LLMs}
+\title{LLMTranslate: Shiny App for TRAPD/ISPOR Survey Translation with LLMs}
 \description{
-LLMTranslate wraps a Shiny application that automates forward translation,
-optional blind back-translation, and reconciliation (TRAPD/ISPOR workflow)
-using large language models (OpenAI GPT-4o / GPT-4.1 / o-series; Google Gemini).
+A Shiny application that automates forward translation, optional blind
+back-translation, and reconciliation following the TRAPD/ISPOR workflow.
+Powered by the ellmer package for provider-agnostic LLM communication.
 }
 \details{
-The main exported function is \code{\link[=run_app]{run_app()}}, which launches the UI.
-All other functions/objects are internal but documented below for clarity.
+Use \code{\link[=run_app]{run_app()}} to launch the interactive Shiny app, or
+\code{\link[=translate_batch]{translate_batch()}} / \code{\link[=translate_item]{translate_item()}} for programmatic translation.
 }
-\section{Launching the app}{
-
-
-\if{html}{\out{<div class="sourceCode r">}}\preformatted{LLMTranslate::run_app()
-}\if{html}{\out{</div>}}
-
-Pass arguments through to \code{shiny::runApp()}, e.g. \code{host}, \code{port}, \code{launch.browser}.
-}
-
-\section{UI overview (tabs and key inputs/outputs)}{
-
-\itemize{
-\item \strong{API Keys & Models}:
-\itemize{
-\item \code{openai_key}, \code{gemini_key}: read from environment if empty.
-\item \code{forward_model}, \code{back_model}, \code{recon_model}: chosen from \code{MODEL_SPEC}.
-\item \code{forward_temp}, \code{back_temp}, \code{recon_temp}: temperature sliders (ignored for o1/o3).
-\item \code{reasoning_effort}: only for OpenAI o-series reasoning models.
-}
-\item \strong{Translation}:
-\itemize{
-\item \code{lang_from}, \code{lang_to}
-\item \code{file}: Excel upload (.xlsx/.xls)
-\item \code{orig_col}: original text column selector
-\item \code{forward_prompt}, \code{back_prompt}, \code{recon_prompt}
-\item \code{do_back}, \code{do_recon}, \code{debug}
-\item Buttons: \code{run}, \code{stop}; download button appears after completion
-\item Outputs: \code{table} (DT), \code{debug_log} (verbatim)
-}
-\item \strong{Help}: instructions, troubleshooting.
-\item \strong{Citation}: citation text & BibTeX.
-\item \strong{About}: brief description and credits.
-}
-}
-
-\section{Citation}{
-
-See the Citation tab or \code{citation("LLMTranslate")}. Also cite specific LLMs and TRAPD/ISPOR frameworks.
-}
-
 \examples{
-\donttest{
-if (interactive()) {
-  LLMTranslate::run_app()
-}
-}
-
+\dontshow{if (interactive()) withAutoprint(\{ # examplesIf}
+LLMTranslate::run_app()
+\dontshow{\}) # examplesIf}
 }
 \seealso{
-\code{\link[=run_app]{run_app()}}
+\code{\link[=run_app]{run_app()}}, \code{\link[=translate_batch]{translate_batch()}}, \code{\link[=translate_item]{translate_item()}}
 }
 \author{
-\strong{Maintainer}: Jonas R. Kunst \email{jonas.r.kunst@bi.no}
+\strong{Maintainer}: Jonas R. Kunst \email{jonas.r.kunst@bi.no} [copyright holder]
+
+Other contributors:
+\itemize{
+  \item Athanasia M. Mowinckel \email{a.m.mowinckel@psykologi.uio.no} (\href{https://orcid.org/0000-0002-5756-0223}{ORCID}) (drmowinckels) [contributor]
+}
 
 }
