@@ -2,6 +2,7 @@
 # LLMTranslate
 
 <!-- badges: start -->
+[![R-CMD-check](https://github.com/jrk1/LLMTranslate/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/jrk1/LLMTranslate/actions/workflows/R-CMD-check.yaml)
 <!-- badges: end -->
 
 **LLMTranslate** is an R package that wraps a Shiny application for TRAPD/ISPOR-style survey translation. It automates forward translation, optional back-translation, and reconciliation using large language models from multiple providers:
@@ -10,7 +11,7 @@
 - **Google Gemini**: Gemini 2.5 Pro, 2.5 Flash, 2.0 Flash
 - **Anthropic Claude**: Claude Sonnet 4.5, Claude Haiku 4.5, Claude Opus 4.1, and more
 
-## Key Features (v0.3.0)
+## Key Features
 
 - **Two Translation Modes**:
   - **Batch Translation**: Translates all items in one LLM call for speed and context-aware consistency
