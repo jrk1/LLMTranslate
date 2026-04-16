@@ -1,3 +1,43 @@
+# LLMTranslate 0.4.0
+
+## Breaking Changes
+
+* Replaced hand-rolled API wrappers (`httr2`-based) with [ellmer](https://ellmer.tidyverse.org/) as the LLM communication backbone
+* Removed `httr2` dependency; added `ellmer` (>= 0.1.0) to Imports
+* API keys are no longer entered in the app UI; set them as environment variables per ellmer's documentation (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` in `~/.Renviron`)
+* Models are now specified as `provider/model` strings (e.g. `openai/gpt-4.1`, `anthropic/claude-sonnet-4-5-20250929`)
+* Removed `MODEL_SPEC`, `NORMALIZE_MAP`, and model alias normalization; the full provider ecosystem is now dynamic
+* Replaced `translate()` with two purpose-named exports: `translate_batch()` (all items in one LLM call per stage) and `translate_item()` (one item at a time)
+
+## New Features
+
+* **Provider-agnostic LLM backend**: supports all ellmer providers (OpenAI, Anthropic, Google Gemini, Azure, AWS Bedrock, Ollama, DeepSeek, Groq, Mistral, and more)
+* **Dynamic provider dropdown**: the "Model Setup" tab lists all available ellmer providers and auto-populates model lists when the provider's API key is configured
+* **Dynamic model discovery**: for providers that support it (OpenAI, Anthropic, Google, Ollama, etc.), available models are fetched and shown in a searchable dropdown; custom model names can also be typed
+* **`translate_batch()` / `translate_item()` functions**: New exported functions for programmatic/CLI translation without the Shiny app. Supports all providers, back-translation, and reconciliation with `cli` progress bars
+* **Single test button**: "Test Forward Model Connection" verifies that the selected provider/model combination works
+* Batch reconciliation now returns a `Recon_Severity` column in both the Shiny app and the programmatic API
+
+## UI Overhaul
+
+* Redesigned the Shiny app as a modern dashboard using `bslib::page_navbar()` with the Flatly theme
+* Consolidated file upload, language selection, and column picker into a single shared sidebar on the "Translate" tab — previously duplicated across batch and item-by-item modes
+* Translation modes are now toggled via pills within the same page instead of separate tabs
+* Model setup uses a card-based layout with three columns (forward, backward, reconciliation)
+* Prompts and debug logs are now in collapsible accordions to reduce visual clutter
+* "Reset Results" now only clears translation results without affecting file upload or language settings
+* Added `bslib` to Imports
+
+## Internal
+
+* Removed ~400 lines of hand-rolled HTTP code (`call_openai_chat()`, `call_openai_reasoning_responses()`, `call_gemini_chat()`, `call_claude_chat()`, `perform_req()`, `create_chat()`, `get_spec()`, `is_reasoning_model()`, `normalize_model()`, `coalesce_chr()`)
+* `llm_call()` is now a thin wrapper around `ellmer::chat()`
+* `available_providers()` dynamically discovers providers from ellmer namespace
+* `available_models()` queries provider-specific model lists via `ellmer::models_*()`
+* Extracted batch translation logic into reusable internal helpers (`batch_forward()`, `batch_back()`, `batch_reconcile()`), shared by both exported functions and the Shiny app
+* Refactored Shiny batch server to call shared batch helpers instead of inline orchestration
+* Fixed `parse_batch_recon_response()` to extract the `severity` field from LLM responses
+
 # LLMTranslate 0.3.0
 
 ## Major Features
