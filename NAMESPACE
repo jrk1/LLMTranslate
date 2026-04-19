@@ -3,6 +3,8 @@
 export(run_app)
 export(translate_batch)
 export(translate_item)
+export(translation_log)
+export(translation_result)
 import(shiny)
 importFrom(DT,DTOutput)
 importFrom(DT,datatable)

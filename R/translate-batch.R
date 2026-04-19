@@ -27,29 +27,52 @@ batch_translate <- function(
   register_str = "",
   temperature = 0,
   prompt_template,
+  batch_size = NULL,
   logger = function(...) {}
 ) {
   items <- as.character(items)
-  items_text <- paste(
-    paste0(seq_along(items), ". ", items),
-    collapse = "\n"
-  )
-  pd <- list(
-    items_text = items_text,
-    from_lang = from_lang,
-    to_lang = to_lang,
-    context = context_str,
-    register = register_str
-  )
-  prompt <- glue::glue_data(pd, prompt_template)
-  response <- llm_call(model, prompt, temperature, logger)
-  logger("Batch response received, parsing...")
-  parsed <- parse_batch_response(response, field_name, length(items), logger)
-  vapply(parsed, function(x) {
-    val <- x %||% NA_character_
-    if (is.list(val) || length(val) != 1L) return(NA_character_)
-    as.character(val)
-  }, character(1))
+  chunks <- chunk_seq(length(items), batch_size)
+
+  if (length(chunks) > 1L) {
+    logger(sprintf(
+      "Splitting %d items into %d batches of up to %d",
+      length(items), length(chunks), batch_size
+    ))
+  }
+
+  results <- character(length(items))
+
+  for (ci in seq_along(chunks)) {
+    idx <- chunks[[ci]]
+    chunk_items <- items[idx]
+
+    if (length(chunks) > 1L) {
+      logger(sprintf("Batch %d/%d (%d items)", ci, length(chunks), length(idx)))
+    }
+
+    items_text <- paste(
+      paste0(seq_along(chunk_items), ". ", chunk_items),
+      collapse = "\n"
+    )
+    pd <- list(
+      items_text = items_text,
+      from_lang = from_lang,
+      to_lang = to_lang,
+      context = context_str,
+      register = register_str
+    )
+    prompt <- glue::glue_data(pd, prompt_template)
+    response <- llm_call(model, prompt, temperature, logger)
+    logger("Batch response received, parsing...")
+    parsed <- parse_batch_response(response, field_name, length(chunk_items), logger)
+    results[idx] <- vapply(parsed, function(x) {
+      val <- x %||% NA_character_
+      if (is.list(val) || length(val) != 1L) return(NA_character_)
+      as.character(val)
+    }, character(1))
+  }
+
+  results
 }
 
 #' Forward-translate a batch of items in a single LLM call
@@ -77,12 +100,14 @@ batch_forward <- function(
   register_str = "",
   temperature = 0,
   prompt_template = prompt_batch_forward,
+  batch_size = NULL,
   logger = function(...) {}
 ) {
   batch_translate(
     items, model, from_lang, to_lang,
     field_name = "translation",
-    context_str, register_str, temperature, prompt_template, logger
+    context_str, register_str, temperature, prompt_template,
+    batch_size, logger
   )
 }
 
@@ -110,12 +135,14 @@ batch_back <- function(
   register_str = "",
   temperature = 0,
   prompt_template = prompt_batch_back,
+  batch_size = NULL,
   logger = function(...) {}
 ) {
   batch_translate(
     items, model, from_lang, to_lang,
     field_name = "back_translation",
-    context_str, register_str, temperature, prompt_template, logger
+    context_str, register_str, temperature, prompt_template,
+    batch_size, logger
   )
 }
 
@@ -150,6 +177,7 @@ batch_reconcile <- function(
   register_str = "",
   temperature = 0,
   prompt_template = prompt_batch_recon,
+  batch_size = NULL,
   logger = function(...) {}
 ) {
   originals <- as.character(originals)
@@ -159,37 +187,63 @@ batch_reconcile <- function(
     length(originals) == length(forwards),
     length(forwards) == length(backs)
   )
-  item_nums <- seq_along(originals)
-  items_text <- paste(
-    paste0(
-      "Item ", item_nums, ":\n",
-      "ORIGINAL: ", originals, "\n",
-      "FORWARD: ", forwards, "\n",
-      "BACK: ", backs, "\n"
-    ),
-    collapse = "\n"
-  )
 
-  pd <- list(
-    items_text = items_text,
-    from_lang = from_lang,
-    to_lang = to_lang,
-    context = context_str,
-    register = register_str
-  )
-  prompt <- glue::glue_data(pd, prompt_template)
-  response <- llm_call(model, prompt, temperature, logger)
-  logger("Reconciliation batch response received, parsing...")
+  chunks <- chunk_seq(length(originals), batch_size)
 
-  parsed <- parse_batch_recon_response(response, length(originals), logger)
+  if (length(chunks) > 1L) {
+    logger(sprintf(
+      "Splitting %d items into %d reconciliation batches of up to %d",
+      length(originals), length(chunks), batch_size
+    ))
+  }
 
-  list(
-    revised = vapply(parsed, `[[`, "", "revised"),
-    explanation = vapply(parsed, `[[`, "", "explanation"),
-    severity = vapply(
+  revised <- character(length(originals))
+  explanation <- character(length(originals))
+  severity <- character(length(originals))
+
+  for (ci in seq_along(chunks)) {
+    idx <- chunks[[ci]]
+
+    if (length(chunks) > 1L) {
+      logger(sprintf("Reconciliation batch %d/%d (%d items)", ci, length(chunks), length(idx)))
+    }
+
+    chunk_orig <- originals[idx]
+    chunk_fwd <- forwards[idx]
+    chunk_back <- backs[idx]
+
+    item_nums <- seq_along(chunk_orig)
+    items_text <- paste(
+      paste0(
+        "Item ", item_nums, ":\n",
+        "ORIGINAL: ", chunk_orig, "\n",
+        "FORWARD: ", chunk_fwd, "\n",
+        "BACK: ", chunk_back, "\n"
+      ),
+      collapse = "\n"
+    )
+
+    pd <- list(
+      items_text = items_text,
+      from_lang = from_lang,
+      to_lang = to_lang,
+      context = context_str,
+      register = register_str
+    )
+    prompt <- glue::glue_data(pd, prompt_template)
+    response <- llm_call(model, prompt, temperature, logger)
+    logger("Reconciliation batch response received, parsing...")
+
+    parsed <- parse_batch_recon_response(response, length(chunk_orig), logger)
+
+    revised[idx] <- vapply(parsed, `[[`, "", "revised")
+    explanation[idx] <- vapply(parsed, `[[`, "", "explanation")
+    severity[idx] <- vapply(
       parsed,
       function(x) as.character(x[["severity"]] %||% NA_character_),
       character(1)
     )
-  )
+  }
+
+  list(revised = revised, explanation = explanation, severity = severity)
 }

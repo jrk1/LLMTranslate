@@ -54,11 +54,22 @@ batch_server <- function(input, output, session, file_rv, batch_rv) {
       openxlsx::writeData(wb, "Model Selection Log", logs$model_log)
       openxlsx::addWorksheet(wb, "Prompt Log")
       openxlsx::writeData(wb, "Prompt Log", logs$prompt_log)
+      if (length(batch_rv$log) > 0) {
+        debug_df <- data.frame(
+          Timestamp = sub(" \\| .*", "", batch_rv$log),
+          Message = sub("^[^ ]+ \\| ", "", batch_rv$log),
+          stringsAsFactors = FALSE
+        )
+        openxlsx::addWorksheet(wb, "Debug Log")
+        openxlsx::writeData(wb, "Debug Log", debug_df)
+      }
       openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
     }
   )
 
-  output$batch_debug_log <- renderText(paste(batch_rv$log, collapse = "\n"))
+  output$batch_debug_log <- renderText({
+    if (isTRUE(input$batch_debug)) paste(batch_rv$log, collapse = "\n") else ""
+  })
 
   output$batch_sheet_display_selector <- renderUI({
     req(batch_rv$result)
@@ -102,7 +113,7 @@ batch_server <- function(input, output, session, file_rv, batch_rv) {
     batch_rv$stop <- FALSE; batch_rv$running <- TRUE
     batch_rv$log <- character(); batch_rv$preview <- NULL
 
-    logger <- make_app_logger(batch_rv, isTRUE(input$batch_debug))
+    logger <- make_app_logger(batch_rv, enabled = TRUE)
     logger("---- BATCH TRANSLATION START ----")
 
     f_model <- full_model(input, "forward_provider", "forward_model")
@@ -114,6 +125,7 @@ batch_server <- function(input, output, session, file_rv, batch_rv) {
 
     batch_context  <- .pkg$format_context(input$instrument_context)
     batch_register <- .pkg$format_register(input$target_register)
+    batch_size <- if (is.na(input$batch_size) || is.null(input$batch_size)) NULL else as.integer(input$batch_size)
 
     selected_sheet <- file_rv$selected_sheet
     all_sheets <- file_rv$sheets %||% openxlsx::getSheetNames(file_rv$file_path)
@@ -137,6 +149,7 @@ batch_server <- function(input, output, session, file_rv, batch_rv) {
       do_recon = isTRUE(input$batch_do_back) && isTRUE(input$batch_do_recon),
       f_model = f_model, b_model = b_model, r_model = r_model,
       f_temp = input$forward_temp, b_temp = input$back_temp, r_temp = input$recon_temp,
+      batch_size = batch_size,
       orig_col = input$orig_col,
       context = batch_context,
       register = batch_register,
@@ -246,6 +259,7 @@ batch_server <- function(input, output, session, file_rv, batch_rv) {
               cfg$from_lang, cfg$to_lang,
               cfg$context, cfg$register, cfg$f_temp,
               prompt_template = cfg$forward_prompt,
+              batch_size = cfg$batch_size,
               logger = logger
             )
 
@@ -276,6 +290,7 @@ batch_server <- function(input, output, session, file_rv, batch_rv) {
               cfg$from_lang, cfg$to_lang,
               cfg$context, cfg$register, cfg$b_temp,
               prompt_template = cfg$back_prompt,
+              batch_size = cfg$batch_size,
               logger = logger
             )
 
@@ -307,7 +322,8 @@ batch_server <- function(input, output, session, file_rv, batch_rv) {
               cfg$df[[cfg$back_col]][cfg$non_empty_idx],
               cfg$r_model, cfg$from_lang, cfg$to_lang,
               cfg$context, cfg$register, cfg$r_temp,
-              prompt_template = cfg$recon_prompt, logger = logger
+              prompt_template = cfg$recon_prompt,
+              batch_size = cfg$batch_size, logger = logger
             )
             cfg$df[[cfg$recon_col]][cfg$non_empty_idx] <- recon_result$revised
             cfg$df[[cfg$change_col]][cfg$non_empty_idx] <- recon_result$explanation

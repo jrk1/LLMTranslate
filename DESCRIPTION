@@ -10,8 +10,9 @@ Description: A 'shiny' application to automate forward and back survey
     translation with optional reconciliation using large language models
     (LLMs). Supports both item-by-item and batch translation modes for
     optimal performance and context-aware translations. Handles
-    multi-sheet Excel files and supports OpenAI (GPT), Google Gemini,
-    Anthropic Claude, and many other providers via the 'ellmer' package.
+    multi-sheet 'Excel' files and supports 'OpenAI' ('GPT'), 'Google
+    Gemini', 'Anthropic Claude', and many other providers via the
+    'ellmer' package.
     Follows the TRAPD (Translation, Review, Adjudication, Pretesting,
     Documentation) framework and ISPOR (International Society for
     Pharmacoeconomics and Outcomes Research) recommendations. See Harkness
@@ -32,8 +33,11 @@ Imports:
     rlang,
     shiny
 Suggests:
+    knitr,
+    rmarkdown,
     testthat (>= 3.0.0),
     withr
+VignetteBuilder: knitr
 Config/testthat/edition: 3
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)

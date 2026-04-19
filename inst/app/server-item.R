@@ -41,11 +41,22 @@ item_server <- function(input, output, session, file_rv, rv) {
       openxlsx::writeData(wb, "Model Selection Log", logs$model_log)
       openxlsx::addWorksheet(wb, "Prompt Log")
       openxlsx::writeData(wb, "Prompt Log", logs$prompt_log)
+      if (length(rv$log) > 0) {
+        debug_df <- data.frame(
+          Timestamp = sub(" \\| .*", "", rv$log),
+          Message = sub("^[^ ]+ \\| ", "", rv$log),
+          stringsAsFactors = FALSE
+        )
+        openxlsx::addWorksheet(wb, "Debug Log")
+        openxlsx::writeData(wb, "Debug Log", debug_df)
+      }
       openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
     }
   )
 
-  output$item_debug_log <- renderText(paste(rv$log, collapse = "\n"))
+  output$item_debug_log <- renderText({
+    if (isTRUE(input$item_debug)) paste(rv$log, collapse = "\n") else ""
+  })
 
   output$item_table <- renderDT({
     dat <- if (is.null(rv$result)) file_rv$df else rv$result
@@ -77,7 +88,7 @@ item_server <- function(input, output, session, file_rv, rv) {
       rv$stop <- FALSE; rv$running <- TRUE
     }
 
-    logger <- make_app_logger(rv, isTRUE(input$item_debug))
+    logger <- make_app_logger(rv, enabled = TRUE)
     logger(if (resume) "---- RUN RESUME ----" else "---- RUN START ----")
 
     f_model <- full_model(input, "forward_provider", "forward_model")

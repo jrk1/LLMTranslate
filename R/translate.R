@@ -29,12 +29,19 @@
 #'   (e.g. "Use formal clinical language" or "Use informal language
 #'   appropriate for adolescents aged 13-17").
 #' @param sheet Sheet name or index for Excel files. Defaults to 1.
+#' @param batch_size Maximum number of items per LLM call for
+#'   `translate_batch()`. `NULL` (default) sends all items in one
+#'   call. Set to e.g. 50 or 100 to split a large questionnaire
+#'   into smaller batches — a 400-item survey with `batch_size = 100`
+#'   will make 4 calls per stage. Ignored by `translate_item()`.
 #' @param verbose Logical; if `TRUE`, prints timestamped debug
 #'   messages showing model calls and response previews.
 #'
 #' @return A data frame with the original data plus added columns:
 #'   `Forward_<to_lang>`, and optionally `Back_<from_lang>`,
 #'   `Reconciled_<to_lang>`, `Recon_Explanation`, and `Recon_Severity`.
+#'   When `verbose = TRUE`, the returned data frame carries an `"log"`
+#'   attribute containing the timestamped debug messages (character vector).
 #'
 #' @importFrom cli cli_progress_bar cli_progress_update cli_progress_done
 #'   cli_alert_success cli_alert_info cli_alert_danger cli_h2 cli_abort
@@ -125,6 +132,7 @@ translate_batch <- function(
   temperature = 0,
   context = NULL,
   register = NULL,
+  batch_size = NULL,
   sheet = 1,
   verbose = FALSE
 ) {
@@ -152,7 +160,7 @@ translate_batch <- function(
     batch_forward(
       items[non_empty], model, from_lang, to_lang,
       prep$context_str, prep$register_str, temperature,
-      logger = logger
+      batch_size = batch_size, logger = logger
     ),
     error = function(e) {
       cli::cli_alert_danger("Forward translation failed: {e$message}")
@@ -161,7 +169,10 @@ translate_batch <- function(
   )
   cli::cli_alert_success("Forward translation complete ({n} items)")
 
-  if (!prep$do_back) return(data)
+  if (!prep$do_back) {
+    attr(data, "log") <- attr(logger, "get_log")()
+    return(data)
+  }
 
   cli::cli_h2("Back-translation (batch)")
   bm <- back_model
@@ -170,7 +181,7 @@ translate_batch <- function(
     batch_back(
       data[[cols$fwd_col]][non_empty], back_model, from_lang, to_lang,
       prep$context_str, prep$register_str, temperature,
-      logger = logger
+      batch_size = batch_size, logger = logger
     ),
     error = function(e) {
       cli::cli_alert_danger("Back-translation failed: {e$message}")
@@ -179,7 +190,10 @@ translate_batch <- function(
   )
   cli::cli_alert_success("Back-translation complete ({n} items)")
 
-  if (!prep$do_recon) return(data)
+  if (!prep$do_recon) {
+    attr(data, "log") <- attr(logger, "get_log")()
+    return(data)
+  }
 
   cli::cli_h2("Reconciliation (batch)")
   rm <- recon_model
@@ -190,7 +204,7 @@ translate_batch <- function(
       data[[cols$back_col]][non_empty],
       recon_model, from_lang, to_lang,
       prep$context_str, prep$register_str, temperature,
-      logger = logger
+      batch_size = batch_size, logger = logger
     ),
     error = function(e) {
       cli::cli_alert_danger("Reconciliation failed: {e$message}")
@@ -206,6 +220,7 @@ translate_batch <- function(
   data[[cols$severity_col]][non_empty] <- recon_result$severity
   cli::cli_alert_success("Reconciliation complete ({n} items)")
 
+  attr(data, "log") <- attr(logger, "get_log")()
   data
 }
 
@@ -263,7 +278,10 @@ translate_item <- function(
   cli::cli_progress_done()
   cli::cli_alert_success("Forward translation complete ({n} items)")
 
-  if (!prep$do_back) return(data)
+  if (!prep$do_back) {
+    attr(data, "log") <- attr(logger, "get_log")()
+    return(data)
+  }
 
   cli::cli_h2("Back-translation")
   bm <- back_model
@@ -284,7 +302,10 @@ translate_item <- function(
   cli::cli_progress_done()
   cli::cli_alert_success("Back-translation complete ({n} items)")
 
-  if (!prep$do_recon) return(data)
+  if (!prep$do_recon) {
+    attr(data, "log") <- attr(logger, "get_log")()
+    return(data)
+  }
 
   cli::cli_h2("Reconciliation")
   rm <- recon_model
@@ -315,5 +336,6 @@ translate_item <- function(
   cli::cli_progress_done()
   cli::cli_alert_success("Reconciliation complete ({n} items)")
 
+  attr(data, "log") <- attr(logger, "get_log")()
   data
 }

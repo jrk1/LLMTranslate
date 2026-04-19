@@ -23,6 +23,10 @@ mode_panel_ui <- function(prefix, run_label, is_batch = FALSE) {
             TRUE
           )
         ),
+        if (is_batch) numericInput(
+          "batch_size", "Batch size (items per LLM call)",
+          value = NA, min = 1, step = 1
+        ),
         checkboxInput(paste0(prefix, "_debug"), "Verbose debug", FALSE)
       ),
       accordion_panel(
@@ -266,7 +270,7 @@ ui <- page_navbar(
         tags$ul(
           tags$li("Authentication errors: Check that your API key environment variable is set correctly. Restart R after editing .Renviron."),
           tags$li("Model not found: Verify the provider/model string matches ellmer's format."),
-          tags$li("Token limit errors in Batch mode: Switch to Item-by-item or use a model with higher token limits."),
+          tags$li("Token limit errors in Batch mode: Set a smaller batch size in Options (e.g. 50 or 100), switch to Item-by-item, or use a model with higher token limits."),
           tags$li("If something hangs, press Stop. Check the Debug log.")
         )
       )

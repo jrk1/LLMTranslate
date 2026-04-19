@@ -53,13 +53,17 @@ format_register <- function(register) {
 make_logger <- function(enabled, sink = NULL, max_lines = 500L) {
   force(enabled)
   force(sink)
-  function(...) {
+  env <- new.env(parent = emptyenv())
+  env$messages <- character()
+
+  logger <- function(...) {
     if (!enabled) return(invisible())
     msg <- paste0(
       format(Sys.time(), "%H:%M:%S"), " | ",
       paste(..., collapse = " ")
     )
     cli::cli_inform(msg)
+    env$messages <- c(env$messages, msg)
     if (!is.null(sink)) {
       shiny::isolate({
         log <- sink$log
@@ -78,4 +82,20 @@ make_logger <- function(enabled, sink = NULL, max_lines = 500L) {
     }
     invisible()
   }
+
+  attr(logger, "get_log") <- function() env$messages
+  logger
+}
+
+#' Split a sequence into chunks of a given size
+#'
+#' @param n Total number of elements.
+#' @param size Chunk size. If `NULL`, returns a single chunk.
+#' @return A list of integer vectors of indices.
+#' @keywords internal
+#' @noRd
+chunk_seq <- function(n, size = NULL) {
+  if (is.null(size) || size >= n) return(list(seq_len(n)))
+  starts <- seq(1L, n, by = size)
+  lapply(starts, function(s) seq(s, min(s + size - 1L, n)))
 }

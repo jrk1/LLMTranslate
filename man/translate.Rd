@@ -17,6 +17,7 @@ translate_batch(
   temperature = 0,
   context = NULL,
   register = NULL,
+  batch_size = NULL,
   sheet = 1,
   verbose = FALSE
 )
@@ -64,6 +65,12 @@ measure depressive symptoms over the past two weeks.").}
 (e.g. "Use formal clinical language" or "Use informal language
 appropriate for adolescents aged 13-17").}
 
+\item{batch_size}{Maximum number of items per LLM call for
+\code{translate_batch()}. \code{NULL} (default) sends all items in one
+call. Set to e.g. 50 or 100 to split a large questionnaire
+into smaller batches — a 400-item survey with \code{batch_size = 100}
+will make 4 calls per stage. Ignored by \code{translate_item()}.}
+
 \item{sheet}{Sheet name or index for Excel files. Defaults to 1.}
 
 \item{verbose}{Logical; if \code{TRUE}, prints timestamped debug
@@ -73,6 +80,8 @@ messages showing model calls and response previews.}
 A data frame with the original data plus added columns:
 \verb{Forward_<to_lang>}, and optionally \verb{Back_<from_lang>},
 \verb{Reconciled_<to_lang>}, \code{Recon_Explanation}, and \code{Recon_Severity}.
+When \code{verbose = TRUE}, the returned data frame carries an \code{"log"}
+attribute containing the timestamped debug messages (character vector).
 }
 \description{
 Perform TRAPD/ISPOR-style forward translation with optional
