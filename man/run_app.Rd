@@ -16,7 +16,7 @@ No return value, called for side effects (launches a shiny app).
 Launch the LLM Survey Translator shiny app
 }
 \examples{
-if (interactive()) {
-  run_app()
-}
+\dontshow{if (interactive()) withAutoprint(\{ # examplesIf}
+run_app()
+\dontshow{\}) # examplesIf}
 }

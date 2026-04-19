@@ -2,24 +2,22 @@
 # LLMTranslate
 
 <!-- badges: start -->
+[![R-CMD-check](https://github.com/jrk1/LLMTranslate/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/jrk1/LLMTranslate/actions/workflows/R-CMD-check.yaml)
 <!-- badges: end -->
 
-**LLMTranslate** is an R package that wraps a Shiny application for TRAPD/ISPOR-style survey translation. It automates forward translation, optional back-translation, and reconciliation using large language models from multiple providers:
+**LLMTranslate** automates TRAPD/ISPOR-style survey translation using large language models.
+It runs a full three-stage pipeline --- forward translation, blind back-translation, and reconciliation with severity ratings --- in minutes rather than weeks.
 
-- **OpenAI**: GPT-4o, GPT-4.1, GPT-5 series, and o-series reasoning models
-- **Google Gemini**: Gemini 2.5 Pro, 2.5 Flash, 2.0 Flash
-- **Anthropic Claude**: Claude Sonnet 4.5, Claude Haiku 4.5, Claude Opus 4.1, and more
+Any LLM provider supported by the [ellmer](https://ellmer.tidyverse.org/) package works out of the box: OpenAI, Anthropic, Google Gemini, Azure, Ollama, DeepSeek, Groq, Mistral, and more.
 
-## Key Features (v0.3.0)
+## Key Features
 
-- **Two Translation Modes**:
-  - **Batch Translation**: Translates all items in one LLM call for speed and context-aware consistency
-  - **Item-by-item Translation**: Processes each item separately, ideal for very long instruments
-- **Multi-Sheet Excel Support**: Translate individual sheets or all sheets at once
-- **Custom Model Support**: Enter any model name, not just predefined ones
-- **Smart Empty Row Handling**: Automatically skips empty rows while maintaining alignment
-- **Comprehensive Logging**: Download includes Model Selection Log, Prompt Log, and translation mode used
-- **Progress Tracking**: Visual progress bars with sheet-specific status updates
+- **Two interfaces**: interactive Shiny app (`run_app()`) and programmatic R functions (`translate_batch()`, `translate_item()`)
+- **Batch and item-by-item modes**: batch sends all items in one LLM call for speed and cross-item consistency; item-by-item processes each item separately for large instruments or rate-limited APIs
+- **Configurable batch size**: split large instruments into smaller chunks with `batch_size` while keeping batch-mode benefits
+- **Multi-sheet Excel support**: translate individual sheets or all sheets at once
+- **Provider-agnostic**: specify models as `provider/model` strings (e.g. `"openai/gpt-4.1"`, `"anthropic/claude-sonnet-4-5-20250929"`)
+- **Full audit trail**: model selection log, prompt log, and debug log included in downloads; from R, use `translation_log()` to access the debug trace
 
 ## Installation
 
@@ -29,45 +27,69 @@ Install from CRAN:
 install.packages("LLMTranslate")
 ```
 
+Or install the development version from GitHub:
+
+``` r
+# install.packages("pak")
+pak::pak("jrk1/LLMTranslate")
+```
+
 ## Usage
 
-Launch the Shiny app:
+### Shiny app
 
 ``` r
 library(LLMTranslate)
 run_app()
 ```
 
-### Quick Start
+1. Configure your provider and model in the **Setup** tab
+2. Upload an Excel file in the **Translate** tab, pick the column with your items
+3. Start translation and monitor progress
+4. Download results as an Excel workbook with all logs
 
-1. **Set up API keys** in the "API Keys & Models" tab (or set environment variables)
-2. **Choose translation mode**: Batch Translation (recommended) or Item-by-item
-3. **Upload Excel file** with one item per row
-4. **Select sheet(s)** to translate (or choose "All sheets")
-5. **Choose column** containing original items
-6. **Adjust prompts** if needed (defaults follow TRAPD/ISPOR best practices)
-7. **Start translation** and monitor progress
-8. **Download results** as Excel with all sheets and logs
+### From R
 
-### Excel File Preparation
+``` r
+library(LLMTranslate)
 
-- One survey item per row
-- Dedicated column with original text
-- No merged cells
-- Supports .xlsx and .xls formats
-- Multiple sheets supported
+df <- data.frame(item = c("I feel happy", "I feel sad"))
 
-## Translation Modes
+result <- translate_batch(
+  df, "item",
+  from_lang = "English",
+  to_lang = "German",
+  model = "openai/gpt-4.1"
+)
+```
 
-**Batch Translation** (recommended for most surveys):
-- Faster processing (3 LLM calls total vs N×3 for item-by-item)
-- Better context-aware translations
-- Maintains terminology consistency across items
-- Best for instruments with <100 items
+Skip back-translation with `back_model = NULL`, or use different models per stage:
 
-**Item-by-item Translation**:
-- Works with any instrument length
-- Can pause and resume translation
-- Better for 100+ items or rate limit concerns
-- Fine-grained error handling per item
+``` r
+result <- translate_batch(
+  df, "item", "English", "German",
+  model = "anthropic/claude-sonnet-4-5-20250929",
+  back_model = "openai/gpt-4.1-mini",
+  recon_model = "anthropic/claude-sonnet-4-5-20250929"
+)
+```
 
+For large instruments, set `batch_size` to avoid token limits:
+
+``` r
+result <- translate_batch(
+  df, "item", "English", "German",
+  model = "openai/gpt-4.1",
+  batch_size = 50
+)
+```
+
+Access the debug log from a verbose run:
+
+``` r
+result <- translate_batch(df, "item", "English", "German",
+                          model = "openai/gpt-4.1", verbose = TRUE)
+translation_log(result)
+```
+
+See `vignette("LLMTranslate")` for the full walkthrough.
