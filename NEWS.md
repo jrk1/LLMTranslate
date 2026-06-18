@@ -1,3 +1,31 @@
+# LLMTranslate 0.4.0
+
+## Bug Fixes
+
+* Fixed a crash during translation when a prompt referenced an unresolved
+  placeholder (e.g. `{items_text}` in item-by-item mode) or when survey text
+  contained literal curly braces. Prompt interpolation now leaves unknown
+  placeholders untouched instead of aborting the run.
+* Fixed GPT-5 / o-series ("reasoning") models: requests previously failed and
+  silently fell back to a chat model. The 'responses' endpoint payload and the
+  output extraction are corrected, and the output token budget was raised so
+  large batch responses are no longer truncated.
+
+## New Features and Improvements
+
+* API calls now automatically retry transient failures (HTTP 429 rate limits
+  and 5xx server errors) with exponential backoff, and surface the provider's
+  error message (e.g. quota details) instead of a bare status code.
+* Custom (user-typed) model names that are not in the built-in list now work
+  end to end: the provider is inferred from the model name, so newly released
+  OpenAI, Gemini, and Anthropic models can be used without an app update.
+* Updated the built-in model list to current models (e.g. Claude Opus 4.8,
+  Sonnet 4.6, Haiku 4.5). Anthropic models that do not accept a temperature
+  parameter are handled automatically.
+* Model selection fields are now freely editable text boxes with a suggestion
+  dropdown, so a custom model name can be typed or edited directly without
+  first clearing the current selection.
+
 # LLMTranslate 0.3.0
 
 ## Major Features

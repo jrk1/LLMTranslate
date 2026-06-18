@@ -16,6 +16,29 @@ library(jsonlite)
 library(glue)
 library(later)
 
+# ---- Safe glue substitution ----
+# Substitutes the placeholders we supply and leaves any other "{placeholder}"
+# untouched instead of throwing. Without this, a single unresolved placeholder
+# (e.g. a prompt that references {items_text}, or survey text that happens to
+# contain a literal "{" / "}") aborts the whole translation with a cryptic
+# "Failed to evaluate glue component" error.
+glue_safe <- function(data, template){
+  glue::glue_data(
+    data, template,
+    .transformer = function(text, envir){
+      nm <- trimws(text)
+      # Only substitute placeholders we explicitly supplied. Anything else
+      # (an unknown placeholder, or a literal "{...}" inside survey text) is
+      # left exactly as written instead of being evaluated or erroring.
+      if (is.list(data) && nm %in% names(data)){
+        val <- data[[nm]]
+        if (!is.null(val)) return(as.character(val))
+      }
+      paste0("{", text, "}")
+    }
+  )
+}
+
 # ---- Pull internal helpers/objects from package namespace ----
 grab <- function(x) getFromNamespace(x, "LLMTranslate")
 
@@ -150,6 +173,23 @@ DEFAULT_BATCH_RECON <- paste(
   sep = "\n"
 )
 
+# ---- Model field helpers ----
+# An editable model field: a normal text box (type and edit freely, including
+# whatever is already selected) with a dropdown of suggested models supplied via
+# an HTML <datalist>. Avoids the selectize quirk where you must delete the chosen
+# item before typing a custom name.
+model_input <- function(id, label, choices, selected){
+  list_id <- paste0(id, "_choices")
+  div(class = "form-group shiny-input-container", style = "width:100%;",
+      tags$label(label, `for` = id, class = "control-label"),
+      tags$input(id = id, type = "text", class = "form-control",
+                 value = selected, list = list_id, autocomplete = "off",
+                 placeholder = "Type a model name or pick from the list"),
+      tags$datalist(id = list_id,
+                    lapply(choices, function(m) tags$option(value = m)))
+  )
+}
+
 # ---- UI ----
 ui <- fluidPage(
   tags$head(
@@ -223,30 +263,19 @@ ui <- fluidPage(
              ),
              hr(),
              h4("Model Selection"),
-             tags$p(style = "font-size: 13px; color: #666;", "Select from the list or type a custom model name"),
+             tags$p(style = "font-size: 13px; color: #666;",
+                    "Type a model name (you can freely edit it) or pick one from the dropdown."),
              fluidRow(
                column(6,
-                      selectizeInput(
-                        "forward_model", "Forward translation model",
-                        choices  = MODEL_SPEC$name,
-                        selected = if ("gpt-5-mini" %in% MODEL_SPEC$name) "gpt-5-mini" else
-                          if ("gpt-4o-mini" %in% MODEL_SPEC$name) "gpt-4o-mini" else
-                            MODEL_SPEC$name[[1]],
-                        options = list(create = TRUE, placeholder = "Select or type model name")
-                      ),
+                      model_input("forward_model", "Forward translation model",
+                                  MODEL_SPEC$name, ""),
                       sliderInput("forward_temp", "Forward model temperature",
                                   min = 0, max = 1, value = 0, step = 0.01),
                       uiOutput("forward_temp_hint")
                ),
                column(6,
-                      selectizeInput(
-                        "back_model", "Backward translation model",
-                        choices  = MODEL_SPEC$name,
-                        selected = if ("gpt-5-mini" %in% MODEL_SPEC$name) "gpt-5-mini" else
-                          if ("gpt-4.1-mini" %in% MODEL_SPEC$name) "gpt-4.1-mini" else
-                            MODEL_SPEC$name[[1]],
-                        options = list(create = TRUE, placeholder = "Select or type model name")
-                      ),
+                      model_input("back_model", "Backward translation model",
+                                  MODEL_SPEC$name, ""),
                       sliderInput("back_temp", "Backward model temperature",
                                   min = 0, max = 2, value = 0, step = 0.01),
                       uiOutput("back_temp_hint")
@@ -255,14 +284,8 @@ ui <- fluidPage(
              hr(),
              fluidRow(
                column(6,
-                      selectizeInput(
-                        "recon_model", "Reconciliation model (3rd call)",
-                        choices  = MODEL_SPEC$name,
-                        selected = if ("gpt-5" %in% MODEL_SPEC$name) "gpt-5" else
-                          if ("gpt-4.1-mini" %in% MODEL_SPEC$name) "gpt-4.1-mini" else
-                            MODEL_SPEC$name[[1]],
-                        options = list(create = TRUE, placeholder = "Select or type model name")
-                      ),
+                      model_input("recon_model", "Reconciliation model (3rd call)",
+                                  MODEL_SPEC$name, ""),
                       sliderInput("recon_temp", "Reconciliation model temperature",
                                   min = 0, max = 1, value = 0, step = 0.01),
                       uiOutput("recon_temp_hint")
@@ -911,8 +934,9 @@ server <- function(input, output, session){
 
       tryCatch({
         if (cfg$stage == "fwd"){
-          f_prompt <- glue_data(
-            list(text = original_text, from_lang = cfg$from_lang, to_lang = cfg$to_lang),
+          f_prompt <- glue_safe(
+            list(text = original_text, items_text = original_text,
+                 from_lang = cfg$from_lang, to_lang = cfg$to_lang),
             cfg$forward_prompt
           )
           out <- llm_call(cfg$f_model, f_prompt, cfg$f_temp,
@@ -922,8 +946,9 @@ server <- function(input, output, session){
           cfg$stage <- if (cfg$do_back) "back" else if (cfg$do_recon) "recon" else "next_item"
 
         } else if (cfg$stage == "back"){
-          b_prompt <- glue_data(
-            list(text = cfg$forward_out, from_lang = cfg$from_lang, to_lang = cfg$to_lang),
+          b_prompt <- glue_safe(
+            list(text = cfg$forward_out, items_text = cfg$forward_out,
+                 from_lang = cfg$from_lang, to_lang = cfg$to_lang),
             cfg$back_prompt
           )
           out <- llm_call(cfg$b_model, b_prompt, cfg$b_temp,
@@ -933,7 +958,7 @@ server <- function(input, output, session){
           cfg$stage <- if (cfg$do_recon) "recon" else "next_item"
 
         } else if (cfg$stage == "recon"){
-          r_prompt_body <- glue_data(
+          r_prompt_body <- glue_safe(
             list(from_lang = cfg$from_lang, to_lang = cfg$to_lang),
             cfg$recon_prompt
           )
@@ -1328,7 +1353,7 @@ server <- function(input, output, session){
           paste0(i, ". ", non_empty_items[i])
         }), collapse = "\n")
 
-        f_prompt <- glue_data(
+        f_prompt <- glue_safe(
           list(items_text = items_text, from_lang = input$batch_lang_from, to_lang = input$batch_lang_to),
           input$batch_forward_prompt
         )
@@ -1362,7 +1387,7 @@ server <- function(input, output, session){
             paste0(i, ". ", df[[fwd_col]][non_empty_idx[i]])
           }), collapse = "\n")
 
-          b_prompt <- glue_data(
+          b_prompt <- glue_safe(
             list(items_text = items_text_back, from_lang = input$batch_lang_from, to_lang = input$batch_lang_to),
             input$batch_back_prompt
           )
@@ -1401,7 +1426,7 @@ server <- function(input, output, session){
               )
             }), collapse = "\n")
 
-            r_prompt <- glue_data(
+            r_prompt <- glue_safe(
               list(items_text = items_text_recon, from_lang = input$batch_lang_from, to_lang = input$batch_lang_to),
               input$batch_recon_prompt
             )

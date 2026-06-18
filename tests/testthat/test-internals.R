@@ -31,6 +31,46 @@ test_that("get_spec returns a row or errors for unsupported models", {
   expect_error(gs("foobar-model"), "Unsupported model")
 })
 
+test_that("resolve_spec returns known rows and infers custom models", {
+  rs <- getFromNamespace("resolve_spec", "LLMTranslate")
+
+  # Known model -> the canonical MODEL_SPEC row
+  expect_equal(rs("gpt-4o-mini")$provider, "openai")
+  expect_equal(rs("claude-opus-4-8")$supports_temp, FALSE)
+
+  # Custom / future models the user might type are inferred by provider
+  custom_claude <- rs("claude-opus-5")
+  expect_equal(custom_claude$provider, "claude")
+  expect_false(custom_claude$supports_temp)  # opus 4.x+ rejects temperature
+
+  custom_sonnet <- rs("claude-sonnet-5")
+  expect_equal(custom_sonnet$provider, "claude")
+  expect_true(custom_sonnet$supports_temp)
+
+  custom_gpt <- rs("gpt-6-turbo")
+  expect_equal(custom_gpt$provider, "openai")
+  expect_equal(custom_gpt$type, "chat")
+
+  custom_reasoning <- rs("gpt-5.1")
+  expect_equal(custom_reasoning$type, "reasoning")
+  expect_false(custom_reasoning$supports_temp)
+
+  custom_gemini <- rs("gemini-3.0-pro")
+  expect_equal(custom_gemini$provider, "gemini")
+
+  # Genuinely unknown names still error
+  expect_error(rs("foobar-model"), "Unsupported model")
+})
+
+test_that("infer_provider maps name conventions to providers", {
+  ip <- getFromNamespace("infer_provider", "LLMTranslate")
+  expect_equal(ip("gpt-4o"), "openai")
+  expect_equal(ip("o3-mini"), "openai")
+  expect_equal(ip("gemini-2.5-pro"), "gemini")
+  expect_equal(ip("claude-haiku-4-5"), "claude")
+  expect_true(is.na(ip("mistral-large")))
+})
+
 test_that("MODEL_SPEC has required columns", {
   ms <- getFromNamespace("MODEL_SPEC", "LLMTranslate")
   expect_true(all(c("name", "provider", "type", "supports_temp") %in% names(ms)))

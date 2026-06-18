@@ -3,3 +3,8 @@
 ^CRAN-SUBMISSION$
 ^cran-comments\.md$
 ^LICENSE\.md$
+^\.claude$
+^\.gitignore$
+^env\.txt$
+^new items.*\.xlsx$
+^dev-test-.*\.R$

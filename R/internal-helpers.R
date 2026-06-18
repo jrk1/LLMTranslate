@@ -28,9 +28,9 @@ MODEL_SPEC <- data.frame(
     # Gemini chat (updated models)
     "gemini-2.5-pro","gemini-2.5-flash","gemini-2.5-flash-lite",
     "gemini-2.0-flash","gemini-2.0-flash-lite",
-    # Claude chat
-    "claude-sonnet-4-5-20250929","claude-haiku-4-5-20251001","claude-opus-4-1-20250805",
-    "claude-sonnet-4-20250514","claude-3-7-sonnet-20250219","claude-3-5-haiku-20241022"
+    # Claude / Anthropic chat (current models)
+    "claude-opus-4-8","claude-sonnet-4-6","claude-haiku-4-5",
+    "claude-opus-4-1-20250805","claude-sonnet-4-5-20250929","claude-3-5-haiku-20241022"
   ),
   provider      = c(
     rep("openai", 4),
@@ -51,7 +51,8 @@ MODEL_SPEC <- data.frame(
     rep(FALSE, 3),  # o-series reasoning: ignore temperature
     rep(FALSE, 3),  # GPT-5 reasoning: ignore temperature
     rep(TRUE, 5),   # gemini chat
-    rep(TRUE, 6)    # claude chat
+    # claude: Opus 4.7/4.8 (and Fable/Mythos) reject the temperature parameter
+    c(FALSE, TRUE, TRUE, TRUE, TRUE, TRUE)
   ),
   stringsAsFactors = FALSE
 )
@@ -130,6 +131,56 @@ get_spec <- function(model){
   row
 }
 
+#' Infer the API provider for a model name not present in MODEL_SPEC
+#'
+#' Returns "openai", "gemini", "claude", or NA when the name doesn't match a
+#' known provider's naming convention.
+#'
+#' @keywords internal
+#' @noRd
+infer_provider <- function(model){
+  m <- tolower(gsub("\\s+", "", model))
+  if (grepl("^(gpt|o[0-9]|chatgpt|text-|davinci|babbage)", m)) "openai"
+  else if (grepl("^gemini", m)) "gemini"
+  else if (grepl("^claude", m)) "claude"
+  else NA_character_
+}
+
+#' Resolve a model spec, inferring one for custom (user-typed) model names
+#'
+#' Known models return their MODEL_SPEC row. Unknown but recognizable names
+#' (e.g. a newly released model the user types in) get a spec inferred from the
+#' provider naming convention, so the app stays usable as new models ship
+#' without a package update. Genuinely unknown names still error.
+#'
+#' @keywords internal
+#' @noRd
+resolve_spec <- function(model){
+  row <- MODEL_SPEC[MODEL_SPEC$name == model, , drop = FALSE]
+  if (nrow(row)) return(row)
+
+  provider <- infer_provider(model)
+  if (is.na(provider)){
+    stop("Unsupported model: ", model,
+         " (could not infer provider - expected an OpenAI, Gemini, or Claude model name)",
+         call. = FALSE)
+  }
+
+  m <- tolower(model)
+  is_reasoning  <- provider == "openai" && (grepl("^gpt-5", m) || grepl("^o[0-9]", m))
+  # Anthropic removed sampling params on Opus 4.7/4.8+ and the Fable/Mythos family
+  claude_no_temp <- provider == "claude" &&
+    grepl("^claude-(opus-(4-(7|8|9)|[5-9])|fable|mythos)", m)
+
+  data.frame(
+    name          = model,
+    provider      = provider,
+    type          = if (is_reasoning) "reasoning" else "chat",
+    supports_temp = !(is_reasoning || claude_no_temp),
+    stringsAsFactors = FALSE
+  )
+}
+
 #' Logger factory
 #'
 #' @keywords internal
@@ -145,21 +196,36 @@ make_logger <- function(rv, enabled){
   }
 }
 
-#' Perform an httr2 request with logging and error handling
+#' Perform an httr2 request with logging, retry/backoff, and error handling
+#'
+#' Transient failures (HTTP 429 rate limits and 5xx server errors) are retried
+#' with exponential backoff that honours any Retry-After header. On a final
+#' error the response body is surfaced in the error message, so the app shows a
+#' useful reason (e.g. quota exceeded, model not found) instead of a bare status.
 #'
 #' @keywords internal
 #' @noRd
-perform_req <- function(req, logger){
+perform_req <- function(req, logger, max_tries = 4){
+  # Retry transient errors; don't let httr2 throw on HTTP errors so we can read
+  # the response body ourselves.
+  req <- httr2::req_retry(
+    req,
+    max_tries    = max_tries,
+    is_transient = function(resp) httr2::resp_status(resp) %in% c(429, 500, 502, 503, 529)
+  )
+  req <- httr2::req_error(req, is_error = function(resp) FALSE)
+
   resp <- tryCatch(httr2::req_perform(req), error = function(e){
-    logger("httr2 perform error:", e$message)
+    logger("httr2 perform error:", conditionMessage(e))
     stop(e)
   })
   status <- httr2::resp_status(resp)
   logger("HTTP status:", status, httr2::resp_status_desc(resp))
   if (status >= 400){
-    body_txt <- httr2::resp_body_string(resp)
+    body_txt <- tryCatch(httr2::resp_body_string(resp), error = function(e) "")
     logger("HTTP error body:", body_txt)
-    stop(sprintf("HTTP %s %s", status, httr2::resp_status_desc(resp)), call. = FALSE)
+    detail <- if (nzchar(body_txt)) paste0(" - ", substr(gsub("\\s+", " ", body_txt), 1, 300)) else ""
+    stop(sprintf("HTTP %s %s%s", status, httr2::resp_status_desc(resp), detail), call. = FALSE)
   }
   resp
 }
@@ -377,10 +443,14 @@ call_openai_reasoning_responses <- function(model, prompt, effort, api_key, logg
     model    = model,
     input    = list(list(
       role    = "user",
-      content = list(list(type = "text", text = prompt))
+      # Responses API requires "input_text" (not "text") for user content.
+      content = list(list(type = "input_text", text = prompt))
     )),
     reasoning         = list(effort = effort),
-    max_output_tokens = 2048
+    # Reasoning models spend part of this budget on hidden reasoning tokens, so
+    # keep it generous: a too-small cap truncates batch JSON mid-array and the
+    # whole response fails to parse. Output tokens are billed only when used.
+    max_output_tokens = 32000
   )
   logger("OpenAI responses model:", model, "effort:", effort)
   logger("Prompt(first 120):", substr(prompt, 1, 120))
@@ -393,12 +463,30 @@ call_openai_reasoning_responses <- function(model, prompt, effort, api_key, logg
   dat  <- httr2::resp_body_json(perform_req(req, logger))
   if (!is.null(dat$error)) stop(dat$error$message, call. = FALSE)
 
-  out <- dat$output_text %null% {
-    # fallback if structure changes
-    tryCatch(
-      paste0(vapply(dat$output[[1]]$content, `[[`, "", "text"), collapse = "\n"),
-      error = function(e) ""
-    )
+  # The raw Responses API returns an `output` array whose items include a
+  # `reasoning` block (no text) followed by a `message` block holding the
+  # answer in `output_text` content. Walk every item and collect text rather
+  # than assuming output[[1]] is the message (it is usually the reasoning).
+  out <- dat$output_text %null% ""
+  if (!nzchar(paste(out, collapse = ""))) {
+    txt <- character(0)
+    for (item in dat$output %null% list()) {
+      for (blk in item$content %null% list()) {
+        t <- blk[["text"]]
+        if (!is.null(t) && nzchar(t)) txt <- c(txt, t)
+      }
+    }
+    out <- paste(txt, collapse = "\n")
+  } else {
+    out <- paste(out, collapse = "")
+  }
+
+  if (!nzchar(out)) {
+    status <- dat$status %null% ""
+    logger("OpenAI responses returned no text (status:", status, ")")
+    if (identical(status, "incomplete"))
+      stop("Reasoning model returned no output (token budget exhausted by reasoning); ",
+           "try a lower reasoning effort or a non-reasoning model.", call. = FALSE)
   }
   logger("OpenAI responses out(first 120):", substr(out, 1, 120))
   out
@@ -485,7 +573,7 @@ call_claude_chat <- function(model, prompt, temperature, api_key, logger){
 llm_call <- function(model, prompt, temperature = 0,
                      openai_key = NULL, gemini_key = NULL, claude_key = NULL,
                      logger = function(...) {}, effort = "medium"){
-  spec <- get_spec(model)
+  spec <- resolve_spec(model)
   if (spec$provider == "openai"){
     key <- coalesce_chr(openai_key, Sys.getenv("OPENAI_API_KEY"))
     if (!nzchar(key)) stop("Missing OpenAI API key", call. = FALSE)
